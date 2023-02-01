@@ -9,5 +9,7 @@ vscode:
 tasks:
   - name: Local terminal
     command: bash
+  - name: tailscaled
+    command: sudo tailscaled
   - name: Remote Jetson Shell
-    command: doppler setup --no-interactive && bash
+    command: sudo -E tailscale up
