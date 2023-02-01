@@ -12,4 +12,4 @@ tasks:
   - name: tailscaled
     command: sudo tailscaled
   - name: Remote Jetson Shell
-    command: sudo -E tailscale up
+    command: sudo -E tailscale up --authkey=$TAILSCALE_AUTHKEY
