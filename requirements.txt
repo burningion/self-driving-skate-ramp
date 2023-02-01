@@ -1,0 +1,5 @@
+pycrc==0.10.0
+pyPS4Controller==1.2.5
+pyserial==3.5
+pySerialTransfer==2.1.7
+pyvesc==1.0.5
