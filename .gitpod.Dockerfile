@@ -5,6 +5,3 @@ RUN (curl -Ls --tlsv1.2 --proto "=https" --retry 3 https://cli.doppler.com/insta
 
 # Next, install tailscale
 RUN curl -fsSL https://tailscale.com/install.sh | sh
-
-# Finally, install our python libraries
-RUN pip install -r requirements.txt
