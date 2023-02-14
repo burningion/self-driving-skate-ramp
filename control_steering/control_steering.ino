@@ -4,6 +4,10 @@
 
 SerialTransfer steerTransfer;
 
+const long interval = 1000;
+unsigned long previousMillis = 0;
+int ledState = LOW;
+
 struct __attribute__((packed)) STRUCT {
   char d;
   int x;
@@ -19,7 +23,7 @@ void setup() {
   // up and down
   pinMode(A7, OUTPUT);
   pinMode(A6, OUTPUT);
-
+  pinMode(13, OUTPUT);
   digitalWrite(A9, LOW);
   digitalWrite(A8, LOW);
   digitalWrite(A7, LOW);
@@ -29,6 +33,19 @@ void setup() {
 }
 
 void loop() {
+ unsigned long currentMillis = millis();
+
+ if (currentMillis - previousMillis >= interval) {
+  previousMillis = currentMillis;
+
+  if (ledState == LOW) {
+    ledState = HIGH;
+  } else {
+    ledState = LOW;
+  }
+  digitalWrite(13, ledState);
+ }
+ 
  if(steerTransfer.available()) {
   uint16_t recSize = 0;
   recSize = steerTransfer.rxObj(steerStruct, recSize);

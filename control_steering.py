@@ -9,8 +9,8 @@ class struct(object):
     
 testStruct = struct
 
-FRONT_DRIVE_RPM = 2200
-BACK_DRIVE_RPM = 2200
+FRONT_DRIVE_RPM = 3100
+BACK_DRIVE_RPM = 2900
 FRONT_SPIN_RPM = 3300
 BACK_SPIN_RPM = 3300
 
@@ -35,6 +35,7 @@ class RampController(Controller):
         Controller.__init__(self, **kwargs)
 
     def on_x_press(self):
+        print("x press")
         if SAFETY_PRESSED == False:
             back_motor.set_rpm(0)
             time.sleep(.1)
@@ -219,6 +220,7 @@ class RampController(Controller):
         return
 
     def on_x_release(self):
+        print("x release")
         back_motor.set_rpm(0)
         time.sleep(.1)
         front_motor.set_rpm(0)
@@ -226,10 +228,13 @@ class RampController(Controller):
         return
 
     def on_square_press(self):
+        print("square press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
             return
-        front_motor.set_rpm(1800)
+        front_motor.set_rpm(-FRONT_DRIVE_RPM)
+        time.sleep(.1)
+        back_motor.set_rpm(-BACK_DRIVE_RPM)
         time.sleep(.1)
         '''
         try:
@@ -240,6 +245,7 @@ class RampController(Controller):
         return
     
     def on_square_release(self):
+        print("square release")
         front_motor.set_rpm(0)
         time.sleep(.1)
         back_motor.set_rpm(0)
@@ -247,13 +253,14 @@ class RampController(Controller):
         return
 
     def on_circle_press(self):
+        print("circle press")
         if SAFETY_PRESSED == False:
             back_motor.set_rpm(0)
             time.sleep(.1)
             front_motor.set_rpm(0)
             return
-        back_motor.set_rpm(-BACK_DRIVE_RPM)
-        front_motor.set_rpm(-FRONT_DRIVE_RPM)
+        back_motor.set_rpm(BACK_DRIVE_RPM)
+        front_motor.set_rpm(FRONT_DRIVE_RPM)
         time.sleep(.1)
         '''
         try:
@@ -264,15 +271,20 @@ class RampController(Controller):
         return
     
     def on_circle_release(self):
+        front_motor.set_rpm(0)
+        time.sleep(.1)
         back_motor.set_rpm(0)
         time.sleep(.1)
         return
 
     def on_triangle_press(self):
+        print("triangle press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
             return
-        front_motor.set_rpm(-1800)
+        front_motor.set_rpm(-FRONT_DRIVE_RPM)
+        time.sleep(.1)
+        back_motor.set_rpm(-BACK_DRIVE_RPM)
         time.sleep(.1)
         '''
         try:
@@ -284,6 +296,9 @@ class RampController(Controller):
     
     def on_triangle_release(self):
         front_motor.set_rpm(0)
+        time.sleep(.1)
+        back_motor.set_rpm(0)
+        time.sleep(.1)
         return
 
     def on_L3_down(self, value):
