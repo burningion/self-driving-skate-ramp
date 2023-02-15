@@ -28,6 +28,8 @@ To control the self driving skate ramp, I use a [Playstation 4 controller](https
 
 The pyPS4Controller library allows me to define which button presses do what. For now, I've got both of my electric skateboard motors hooked up via USB. I use the [PyVESC](https://github.com/LiamBindle/PyVESC) library to send commands, in kind of a non-deal way. If you look at the code, you'll see I'm doing a bunch of `time.sleep(.1)` in between sending commands. This should be improved with a more rigourous fix, but without the sleeps the program crashes.
 
+Pairing the controller with Linux over Bluetooth can be a challenge. The Jetson Nano has a built in bluetooth module supported by Linux, but you'll need to use the `bluetoothctl` tool to pair. Instructions are in the `ps4-controller.md` file.
+
 ## What's Next
 
 Given the description of the project is a self driving ramp, this isn't actually self driving. Ideally we'll get to a point where gestures, voice, or watch controls allow me to dictate what the ramp does, and it otherwise just follows me.
