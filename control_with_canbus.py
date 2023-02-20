@@ -1,6 +1,8 @@
 from pyPS4Controller.controller import Controller
 from pySerialTransfer import pySerialTransfer
-from pyvesc import VESC
+import pyvesc
+from pyvesc.protocol.interface import encode
+
 import time
 
 class struct(object):
@@ -24,8 +26,16 @@ serial_port = '/dev/ttyACM1' # main  motor (second motor should be on canbus)
 
 SAFETY_PRESSED = False
 
+class SetRPM(metaclass=pyvesc.VESCMessage):
+    id = 34
+    fields = [
+        ('motor_id', 'i'), # my slave is set to 1
+        ('command', 'i'), # should be 8 for set RPM
+        ('rpm', 'i') # because we're assuming RPM setting
+    ]
 
-front_motor = VESC(serial_port=serial_port)
+
+front_motor = pyvesc.VESC(serial_port=serial_port)
 
 class RampController(Controller):
 
@@ -39,6 +49,7 @@ class RampController(Controller):
             time.sleep(.1)
             return
         front_motor.set_rpm(FRONT_DRIVE_RPM)
+        front_motor.write(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
@@ -225,6 +236,7 @@ class RampController(Controller):
             front_motor.set_rpm(0)
             return
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
+        front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
@@ -247,6 +259,7 @@ class RampController(Controller):
             time.sleep(.1)
             return
         front_motor.set_rpm(FRONT_DRIVE_RPM)
+        front_motor.write(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
@@ -267,6 +280,7 @@ class RampController(Controller):
             front_motor.set_rpm(0)
             return
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
+        front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
