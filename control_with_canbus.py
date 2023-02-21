@@ -26,7 +26,7 @@ serial_port = '/dev/ttyACM1' # main  motor (second motor should be on canbus)
 
 SAFETY_PRESSED = False
 
-class SetRPMS(metaclass=pyvesc.VESCMessage):
+class SetRPM(metaclass=pyvesc.VESCMessage):
     id = 34
     fields = [
         ('motor_id', 'B'), # my slave is set to 1
@@ -46,12 +46,12 @@ class RampController(Controller):
         print("x press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
-            front_motor.write(encode(SetRPMS(1, 8, 0)))
+            front_motor.write(encode(SetRPM(1, 8, 0)))
             time.sleep(.1)
             return
         front_motor.set_rpm(FRONT_DRIVE_RPM)
-        front_motor.write(encode(SetRPMS(1, 8, FRONT_DRIVE_RPM)))
-        values = list(encode(SetRPMS(1, 8, FRONT_DRIVE_RPM)))
+        front_motor.write(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
+        values = list(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
         print(*values, "CANBUS MESSAGE")
         time.sleep(.1)
         return
@@ -255,11 +255,11 @@ class RampController(Controller):
         print("circle press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
-            front_motor.write(encode(SetRPMS(1, 8, 0)))
+            front_motor.write(encode(SetRPM(1, 8, 0)))
             time.sleep(.1)
             return
         front_motor.set_rpm(FRONT_DRIVE_RPM)
-        front_motor.write(encode(SetRPMS(1, 8, FRONT_DRIVE_RPM)))
+        front_motor.write(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
@@ -271,7 +271,7 @@ class RampController(Controller):
     
     def on_circle_release(self):
         front_motor.set_rpm(0)
-        front_motor.write(encode(SetRPMS(1, 8, 0)))
+        front_motor.write(encode(SetRPM(1, 8, 0)))
         time.sleep(.1)
         return
 
@@ -279,10 +279,10 @@ class RampController(Controller):
         print("triangle press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
-            front_motor.write(encode(SetRPMS(1, 8, 0)))
+            front_motor.write(encode(SetRPM(1, 8, 0)))
             return
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
-        front_motor.write(encode(SetRPMS(1, 8, -FRONT_DRIVE_RPM)))
+        front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
@@ -294,14 +294,14 @@ class RampController(Controller):
     
     def on_triangle_release(self):
         front_motor.set_rpm(0)
-        front_motor.write(encode(SetRPMS(1, 8, 0)))
+        front_motor.write(encode(SetRPM(1, 8, 0)))
         time.sleep(.1)
         return
 
     def on_L3_down(self, value):
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
-            front_motor.write(encode(SetRPMS(1, 8, 0)))
+            front_motor.write(encode(SetRPM(1, 8, 0)))
             return
 
         if value > 4000:
@@ -318,13 +318,13 @@ class RampController(Controller):
 
     def on_L3_y_at_rest(self):
         front_motor.set_rpm(0)
-        front_motor.write(encode(SetRPMS(1, 8, 0)))
+        front_motor.write(encode(SetRPM(1, 8, 0)))
         time.sleep(.1)
         return
 
     def on_L3_x_at_rest(self):
         front_motor.set_rpm(0)
-        front_motor.write(encode(SetRPMS(1, 8, 0)))
+        front_motor.write(encode(SetRPM(1, 8, 0)))
         time.sleep(.1)
         return
 
