@@ -46,10 +46,11 @@ class RampController(Controller):
         print("x press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
+            front_motor.write(encode(SetRPM(1, 3, 0)))
             time.sleep(.1)
             return
         front_motor.set_rpm(FRONT_DRIVE_RPM)
-        front_motor.write(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
+        front_motor.write(encode(SetRPM(1, 3, FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
@@ -227,6 +228,7 @@ class RampController(Controller):
     def on_x_release(self):
         print("x release")
         front_motor.set_rpm(0)
+        front_motor.write(encode(SetRPM(1, 3, 0)))
         time.sleep(.1)
         return
 
@@ -234,9 +236,10 @@ class RampController(Controller):
         print("square press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
+            front_motor.write(encode(SetRPM(1, 3, 0)))
             return
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
-        front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
+        front_motor.write(encode(SetRPM(1, 3, -FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
@@ -259,7 +262,7 @@ class RampController(Controller):
             time.sleep(.1)
             return
         front_motor.set_rpm(FRONT_DRIVE_RPM)
-        front_motor.write(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
+        front_motor.write(encode(SetRPM(1, 3, FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
@@ -271,6 +274,7 @@ class RampController(Controller):
     
     def on_circle_release(self):
         front_motor.set_rpm(0)
+        front_motor.write(encode(SetRPM(1, 3, 0)))
         time.sleep(.1)
         return
 
@@ -278,9 +282,10 @@ class RampController(Controller):
         print("triangle press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
+            front_motor.write(encode(SetRPM(1, 3, 0)))
             return
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
-        front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
+        front_motor.write(encode(SetRPM(1, 3, -FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
         try:
@@ -292,12 +297,14 @@ class RampController(Controller):
     
     def on_triangle_release(self):
         front_motor.set_rpm(0)
+        front_motor.write(encode(SetRPM(1, 3, 0)))
         time.sleep(.1)
         return
 
     def on_L3_down(self, value):
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
+            front_motor.write(encode(SetRPM(1, 3, 0)))
             return
 
         if value > 4000:
@@ -314,11 +321,13 @@ class RampController(Controller):
 
     def on_L3_y_at_rest(self):
         front_motor.set_rpm(0)
+        front_motor.write(encode(SetRPM(1, 3, 0)))
         time.sleep(.1)
         return
 
     def on_L3_x_at_rest(self):
         front_motor.set_rpm(0)
+        front_motor.write(encode(SetRPM(1, 3, 0)))
         time.sleep(.1)
         return
 
