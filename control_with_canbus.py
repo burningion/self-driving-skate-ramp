@@ -31,7 +31,7 @@ class SetRPMS(metaclass=pyvesc.VESCMessage):
     fields = [
         ('motor_id', 'B'), # my slave is set to 1
         ('command', 'B'), # 8, thanks to this page: https://www.vesc-project.com/node/774
-        ('rpm', 'I') # because we're assuming RPM setting
+        ('rpm', 'i') # because we're assuming RPM setting
     ]
 
 
