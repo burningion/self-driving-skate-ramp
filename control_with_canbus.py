@@ -27,6 +27,12 @@ serial_port = '/dev/ttyACM1' # main  motor (second motor should be on canbus)
 SAFETY_PRESSED = False
 
 class SetRPM(metaclass=pyvesc.VESCMessage):
+    """
+    Sets the RPM on a CANBUS connected device. 
+    Messages have to be sent repeatedly, as CANBUS has a timeout that's configurable
+    within the VESC application. In my case, I set it to 5 seconds, which means the
+    motor only works for 5 seconds after sending this signal.
+    """
     id = 34
     fields = [
         ('motor_id', 'B'), # my slave is set to 1
