@@ -235,6 +235,7 @@ class RampController(Controller):
             front_motor.write(encode(SetRPM(1, 8, 0)))
             return
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
+        time.sleep(.01)
         front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
@@ -248,6 +249,7 @@ class RampController(Controller):
     def on_square_release(self):
         print("square release")
         front_motor.set_rpm(0)
+        front_motor.write(encode(SetRPM(1, 8, 0)))
         time.sleep(.1)
         return
 
@@ -279,9 +281,11 @@ class RampController(Controller):
         print("triangle press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
+            time.sleep(.01)
             front_motor.write(encode(SetRPM(1, 8, 0)))
             return
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
+        time.sleep(.01)
         front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
