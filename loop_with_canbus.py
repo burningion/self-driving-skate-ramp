@@ -4,17 +4,16 @@ import pyvesc
 from pyvesc.protocol.interface import encode
 
 import time
+from Queue import Queue
+import threading
 
-class struct(object):
+class dataStruct(object):
     d = 'L'
     x = 1
-    
-testStruct = struct
 
-FRONT_DRIVE_RPM = 3100
-BACK_DRIVE_RPM = 2900
+testStruct = dataStruct
+
 FRONT_SPIN_RPM = 3300
-BACK_SPIN_RPM = 3300
 
 teensy_port = '/dev/ttyACM0'
 
@@ -48,83 +47,6 @@ class RampController(Controller):
 
     def __init__(self, **kwargs):
         Controller.__init__(self, **kwargs)
-
-    def listen(self, timeout=30, on_connect=None, on_disconnect=None, on_sequence=None):
-        """
-        Start listening for events on a given self.interface
-        :param timeout: INT, seconds. How long you want to wait for the self.interface.
-                        This allows you to start listening and connect your controller after the fact.
-                        If self.interface does not become available in N seconds, the script will exit with exit code 1.
-        :param on_connect: function object, allows to register a call back when connection is established
-        :param on_disconnect: function object, allows to register a call back when connection is lost
-        :param on_sequence: list, allows to register a call back on specific input sequence.
-                            e.g [{"inputs": ['up', 'up', 'down', 'down', 'left', 'right,
-                                             'left', 'right, 'start', 'options'],
-                                  "callback": () -> None)}]
-        :return: None
-        """
-        def on_disconnect_callback():
-            self.is_connected = False
-            if on_disconnect is not None:
-                on_disconnect()
-
-        def on_connect_callback():
-            self.is_connected = True
-            if on_connect is not None:
-                on_connect()
-
-        def wait_for_interface():
-            print("Waiting for interface: {} to become available . . .".format(self.interface))
-            for i in range(timeout):
-                if os.path.exists(self.interface):
-                    print("Successfully bound to: {}.".format(self.interface))
-                    on_connect_callback()
-                    return
-                time.sleep(1)
-            print("Timeout({} sec). Interface not available.".format(timeout))
-            exit(1)
-
-        def read_events():
-            try:
-                return _file.read(self.event_size)
-            except IOError:
-                print("Interface lost. Device disconnected?")
-                on_disconnect_callback()
-                exit(1)
-
-        def check_for(sub, full, start_index):
-            return [start for start in range(start_index, len(full) - len(sub) + 1) if
-                    sub == full[start:start + len(sub)]]
-
-        def unpack():
-            __event = struct.unpack(self.event_format, event)
-            return (__event[3:], __event[2], __event[1], __event[0])
-
-        wait_for_interface()
-        try:
-            _file = open(self.interface, "rb")
-            event = read_events()
-            if on_sequence is None:
-                on_sequence = []
-            special_inputs_indexes = [0] * len(on_sequence)
-            while not self.stop and event:
-                # need to constantly write this value to the canbus
-                front_motor.write(encode(SetRPM(1, 8, CANBUS_VALUE))) 
-                (overflow, value, button_type, button_id) = unpack()
-                if button_id not in self.black_listed_buttons:
-                    self.__handle_event(button_id=button_id, button_type=button_type, value=value, overflow=overflow,
-                                        debug=self.debug)
-                for i, special_input in enumerate(on_sequence):
-                    check = check_for(special_input["inputs"], self.event_history, special_inputs_indexes[i])
-                    if len(check) != 0:
-                        special_inputs_indexes[i] = check[0] + 1
-                        special_input["callback"]()
-                event = read_events()
-        except KeyboardInterrupt:
-            print("\nExiting (Ctrl + C)")
-            on_disconnect_callback()
-            exit(1)
-
 
     def on_x_press(self):
         print("x press")
