@@ -7,6 +7,8 @@ import time
 from Queue import Queue
 import threading
 
+queue = Queue()
+
 class dataStruct(object):
     d = 'L'
     x = 1
@@ -43,6 +45,19 @@ class SetRPM(metaclass=pyvesc.VESCMessage):
 
 front_motor = pyvesc.VESC(serial_port=serial_port)
 
+def send_target_message():
+    myData = threading.local()
+    myData.drive_speed = 0
+    while True:
+        try:
+            val = queue.get()
+            myData.drive_speed = val
+        except queue.Empty:
+            time.sleep(.01)
+        front_motor.write(encode(SetRPM(1, 8, myData.drive_speed)))
+        time.sleep(.01)
+        front_motor.set_rpm(myData.drive_speed)
+
 class RampController(Controller):
 
     def __init__(self, **kwargs):
@@ -54,6 +69,7 @@ class RampController(Controller):
             front_motor.set_rpm(0)
             time.sleep(.1)
             front_motor.write(encode(SetRPM(1, 8, 0)))
+            queue.put(0)
             CANBUS_VALUE = 0
             time.sleep(.1)
             return
@@ -64,6 +80,7 @@ class RampController(Controller):
         print(*values, "CANBUS MESSAGE")
         time.sleep(.1)
         CANBUS_VALUE = FRONT_DRIVE_RPM
+        queue.put(FRONT_DRIVE_RPM)
         return
 
     def on_up_arrow_press(self):
@@ -236,6 +253,7 @@ class RampController(Controller):
         front_motor.set_rpm(0)
         CANBUS_VALUE = 0
         time.sleep(.1)
+        queue.put(0)
         front_motor.write(encode(SetRPM(1, 8, 0)))
         time.sleep(.1)
         return
@@ -246,6 +264,7 @@ class RampController(Controller):
             front_motor.set_rpm(0)
             time.sleep(.1)
             CANBUS_VALUE = 0
+            queue.put(0)
             front_motor.write(encode(SetRPM(1, 8, 0)))
             return
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
@@ -253,6 +272,7 @@ class RampController(Controller):
         front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
         time.sleep(.1)
         CANBUS_VALUE = -FRONT_DRIVE_RPM
+        queue.put(-FRONT_DRIVE_RPM)
         '''
         try:
             print(f"motor rpm: {back_motor.get_rpm()}")
@@ -266,6 +286,7 @@ class RampController(Controller):
         front_motor.set_rpm(0)
         time.sleep(.1)
         front_motor.write(encode(SetRPM(1, 8, 0)))
+        queue.put(0)
         CANBUS_VALUE = 0
         time.sleep(.1)
         return
@@ -276,11 +297,13 @@ class RampController(Controller):
             front_motor.set_rpm(0)
             time.sleep(.1)
             front_motor.write(encode(SetRPM(1, 8, 0)))
+            queue.put(0)
             CANBUS_VALUE = 0
             time.sleep(.1)
             return
         front_motor.set_rpm(FRONT_DRIVE_RPM)
         front_motor.write(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
+        queue.put(FRONT_DRIVE_RPM)
         time.sleep(.1)
         '''
         try:
@@ -295,6 +318,7 @@ class RampController(Controller):
         time.sleep(.1)
         front_motor.write(encode(SetRPM(1, 8, 0)))
         CANBUS_VALUE = 0
+        queue.put(0)
         time.sleep(.1)
         return
 
@@ -304,11 +328,13 @@ class RampController(Controller):
             front_motor.set_rpm(0)
             time.sleep(.01)
             CANBUS_VALUE = 0
+            queue.put(0)
             front_motor.write(encode(SetRPM(1, 8, 0)))
             return
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
         time.sleep(.01)
         CANBUS_VALUE = -FRONT_DRIVE_RPM
+        queue.put(-FRONT_DRIVE_RPM)
         front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
         time.sleep(.1)
         '''
@@ -324,6 +350,7 @@ class RampController(Controller):
         time.sleep(.1)
         CANBUS_VALUE = 0
         front_motor.write(encode(SetRPM(1, 8, 0)))
+        queue.put(0)
         time.sleep(.1)
         return
 
@@ -331,6 +358,7 @@ class RampController(Controller):
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
             CANBUS_VALUE = 0
+            queue.put(0)
             front_motor.write(encode(SetRPM(1, 8, 0)))
             return
 
@@ -349,6 +377,7 @@ class RampController(Controller):
     def on_L3_y_at_rest(self):
         front_motor.set_rpm(0)
         CANBUS_VALUE = 0
+        queue.put(0)
         front_motor.write(encode(SetRPM(1, 8, 0)))
         time.sleep(.1)
         return
@@ -357,6 +386,7 @@ class RampController(Controller):
         front_motor.set_rpm(0)
         CANBUS_VALUE = 0
         front_motor.write(encode(SetRPM(1, 8, 0)))
+        queue.put(0)
         time.sleep(.1)
         return
 
@@ -378,6 +408,8 @@ class RampController(Controller):
 
 
 controller = RampController(interface="/dev/input/js0", connecting_using_ds4drv=False)
+t = threading.Thread(target=send_target_message)
+t.start()
 controller.listen()
 
 while True:
