@@ -53,9 +53,9 @@ def send_target_message():
             val = queue.get()
             myData.drive_speed = val
         except queue.Empty:
-            time.sleep(.01)
+            time.sleep(.001)
         front_motor.write(encode(SetRPM(1, 8, myData.drive_speed)))
-        time.sleep(.01)
+        time.sleep(.001)
         front_motor.set_rpm(myData.drive_speed)
 
 class RampController(Controller):
