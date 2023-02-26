@@ -4,7 +4,7 @@ import pyvesc
 from pyvesc.protocol.interface import encode
 
 import time
-from Queue import Queue
+from queue import Queue
 import threading
 
 queue = Queue()
