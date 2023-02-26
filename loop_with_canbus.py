@@ -15,7 +15,7 @@ class dataStruct(object):
 
 testStruct = dataStruct
 
-FRONT_SPIN_RPM = 3300
+FRONT_DRIVE_RPM = 3300
 
 teensy_port = '/dev/ttyACM0'
 
