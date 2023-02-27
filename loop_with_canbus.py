@@ -49,8 +49,9 @@ def send_target_message():
     myData = threading.local()
     myData.drive_speed = 0
     while True:
+        # print("in the thread")
         try:
-            val = queue.get()
+            val = queue.get(block=False)
             myData.drive_speed = val
         except queue.Empty:
             time.sleep(.001)
