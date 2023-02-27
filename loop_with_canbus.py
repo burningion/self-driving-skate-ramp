@@ -53,7 +53,7 @@ def send_target_message():
         try:
             val = queue.get(block=False)
             myData.drive_speed = val
-        except queue.Empty:
+        except Exception as e:
             time.sleep(.001)
         front_motor.write(encode(SetRPM(1, 8, myData.drive_speed)))
         time.sleep(.001)
