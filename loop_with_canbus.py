@@ -68,18 +68,18 @@ class RampController(Controller):
         print("x press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
-            time.sleep(.1)
+            time.sleep(.01)
             front_motor.write(encode(SetRPM(1, 8, 0)))
             queue.put(0)
             CANBUS_VALUE = 0
-            time.sleep(.1)
+            time.sleep(.01)
             return
         front_motor.set_rpm(FRONT_DRIVE_RPM)
-        time.sleep(.1)
+        time.sleep(.01)
         front_motor.write(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
         values = list(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
         print(*values, "CANBUS MESSAGE")
-        time.sleep(.1)
+        time.sleep(.01)
         CANBUS_VALUE = FRONT_DRIVE_RPM
         queue.put(FRONT_DRIVE_RPM)
         return
@@ -92,7 +92,7 @@ class RampController(Controller):
             sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
             sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
             link.send(sendSize)
-            time.sleep(.1)
+            time.sleep(.01)
             return
         testStruct.d = 'U'
         testStruct.x = 1
@@ -109,13 +109,13 @@ class RampController(Controller):
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)
+        time.sleep(.01)
         testStruct.d = 'D'
         sendSize = 0
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)        
+        time.sleep(.01)        
         return
 
     def on_down_arrow_press(self):
@@ -126,7 +126,7 @@ class RampController(Controller):
             sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
             sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
             link.send(sendSize)
-            time.sleep(.1)
+            time.sleep(.01)
             return
         testStruct.d = 'D'
         testStruct.x = 1
@@ -142,13 +142,13 @@ class RampController(Controller):
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)
+        time.sleep(.01)
         testStruct.d = 'D'
         sendSize = 0
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)        
+        time.sleep(.01)        
         return
 
     def on_left_arrow_press(self):
@@ -158,7 +158,7 @@ class RampController(Controller):
             sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
             sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
             link.send(sendSize)
-            time.sleep(.1)
+            time.sleep(.01)
             return
         testStruct.d = 'L'
         testStruct.x = 1
@@ -176,13 +176,13 @@ class RampController(Controller):
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)
+        time.sleep(.01)
         testStruct.d = 'L'
         sendSize = 0
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)        
+        time.sleep(.01)        
         return
 
     def on_left_right_arrow_release(self):
@@ -192,13 +192,13 @@ class RampController(Controller):
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)
+        time.sleep(.01)
         testStruct.d = 'L'
         sendSize = 0
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)
+        time.sleep(.01)
         return
 
     def on_up_down_arrow_release(self):
@@ -209,13 +209,13 @@ class RampController(Controller):
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)
+        time.sleep(.01)
         testStruct.d = 'D'
         sendSize = 0
         sendSize = link.tx_obj(testStruct.d, start_pos=sendSize)
         sendSize = link.tx_obj(testStruct.x, start_pos=sendSize)
         link.send(sendSize)
-        time.sleep(.1)        
+        time.sleep(.01)        
         return
 
     def on_right_arrow_press(self):
@@ -253,17 +253,17 @@ class RampController(Controller):
         print("x release")
         front_motor.set_rpm(0)
         CANBUS_VALUE = 0
-        time.sleep(.1)
+        time.sleep(.01)
         queue.put(0)
         front_motor.write(encode(SetRPM(1, 8, 0)))
-        time.sleep(.1)
+        time.sleep(.01)
         return
 
     def on_square_press(self):
         print("square press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
-            time.sleep(.1)
+            time.sleep(.01)
             CANBUS_VALUE = 0
             queue.put(0)
             front_motor.write(encode(SetRPM(1, 8, 0)))
@@ -271,7 +271,7 @@ class RampController(Controller):
         front_motor.set_rpm(-FRONT_DRIVE_RPM)
         time.sleep(.01)
         front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
-        time.sleep(.1)
+        time.sleep(.01)
         CANBUS_VALUE = -FRONT_DRIVE_RPM
         queue.put(-FRONT_DRIVE_RPM)
         '''
@@ -285,27 +285,27 @@ class RampController(Controller):
     def on_square_release(self):
         print("square release")
         front_motor.set_rpm(0)
-        time.sleep(.1)
+        time.sleep(.01)
         front_motor.write(encode(SetRPM(1, 8, 0)))
         queue.put(0)
         CANBUS_VALUE = 0
-        time.sleep(.1)
+        time.sleep(.01)
         return
 
     def on_circle_press(self):
         print("circle press")
         if SAFETY_PRESSED == False:
             front_motor.set_rpm(0)
-            time.sleep(.1)
+            time.sleep(.01)
             front_motor.write(encode(SetRPM(1, 8, 0)))
             queue.put(0)
             CANBUS_VALUE = 0
-            time.sleep(.1)
+            time.sleep(.01)
             return
         front_motor.set_rpm(FRONT_DRIVE_RPM)
         front_motor.write(encode(SetRPM(1, 8, FRONT_DRIVE_RPM)))
         queue.put(FRONT_DRIVE_RPM)
-        time.sleep(.1)
+        time.sleep(.01)
         '''
         try:
             print(f"motor rpm: {back_motor.get_rpm()}")
@@ -316,11 +316,11 @@ class RampController(Controller):
     
     def on_circle_release(self):
         front_motor.set_rpm(0)
-        time.sleep(.1)
+        time.sleep(.01)
         front_motor.write(encode(SetRPM(1, 8, 0)))
         CANBUS_VALUE = 0
         queue.put(0)
-        time.sleep(.1)
+        time.sleep(.01)
         return
 
     def on_triangle_press(self):
@@ -337,7 +337,7 @@ class RampController(Controller):
         CANBUS_VALUE = -FRONT_DRIVE_RPM
         queue.put(-FRONT_DRIVE_RPM)
         front_motor.write(encode(SetRPM(1, 8, -FRONT_DRIVE_RPM)))
-        time.sleep(.1)
+        time.sleep(.01)
         '''
         try:
             print(f"motor rpm: {back_motor.get_rpm()}")
@@ -348,11 +348,11 @@ class RampController(Controller):
     
     def on_triangle_release(self):
         front_motor.set_rpm(0)
-        time.sleep(.1)
+        time.sleep(.01)
         CANBUS_VALUE = 0
         front_motor.write(encode(SetRPM(1, 8, 0)))
         queue.put(0)
-        time.sleep(.1)
+        time.sleep(.01)
         return
 
     def on_L3_down(self, value):
@@ -380,7 +380,7 @@ class RampController(Controller):
         CANBUS_VALUE = 0
         queue.put(0)
         front_motor.write(encode(SetRPM(1, 8, 0)))
-        time.sleep(.1)
+        time.sleep(.01)
         return
 
     def on_L3_x_at_rest(self):
@@ -388,7 +388,7 @@ class RampController(Controller):
         CANBUS_VALUE = 0
         front_motor.write(encode(SetRPM(1, 8, 0)))
         queue.put(0)
-        time.sleep(.1)
+        time.sleep(.01)
         return
 
     def on_R1_press(self):
@@ -404,19 +404,11 @@ class RampController(Controller):
         SAFETY_PRESSED = False
         front_motor.set_rpm(0)
         CANBUS_VALUE = 0
-        time.sleep(.1)
+        time.sleep(.01)
         return
 
 
 controller = RampController(interface="/dev/input/js0", connecting_using_ds4drv=False)
 t = threading.Thread(target=send_target_message)
 t.start()
-controller.listen()
-
-while True:
-    print(f"writing ${CANBUS_VALUE}")
-    front_motor.write(encode(SetRPM(1, 8, CANBUS_VALUE)))
-    time.sleep(.1)
-    
-time.sleep(.1)
-
+controller.listen() # CTRL+C to exit
