@@ -2,7 +2,7 @@
 
 [![Open in Gitpod](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#https://github.com/burningion/self-driving-skate-ramp)
 
-[![Image of ramp](https://makeartwithpython.s3.us-west-2.amazonaws.com/ramp-open.jpg)(https://www.makeartwithpython.com/blog/building-a-remote-controlled-skate-ramp/)
+[![Image of ramp](https://makeartwithpython.s3.us-west-2.amazonaws.com/ramp-open.jpg)](https://www.makeartwithpython.com/blog/building-a-remote-controlled-skate-ramp/)
 
 [See the blog post](https://www.makeartwithpython.com/blog/building-a-remote-controlled-skate-ramp/)
 
