@@ -1,5 +1,9 @@
 # Self Driving Skateboard Ramp
 
+[![Open in Gitpod](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#https://github.com/burningion/self-driving-skate-ramp)
+
+[See the blog post](https://www.makeartwithpython.com/blog/building-a-remote-controlled-skate-ramp/)
+
 ## The Inspiration
 
 I take my dog on runs with my skateboard. While skating around the block, I've always wanted to have ramps to hit. So one day I thought, what if the ramps came with me to where I was going? 
@@ -34,6 +38,6 @@ Pairing the controller with Linux over Bluetooth can be a challenge. The Jetson 
 
 Given the description of the project is a self driving ramp, this isn't actually self driving. Ideally we'll get to a point where gestures, voice, or watch controls allow me to dictate what the ramp does, and it otherwise just follows me. (I aim to have a fleet of these.)
 
-## More TBD
+## Accompanying Blog Post
 
-Will fill out here.
+Lives at [makeartwithpython.com](https://www.makeartwithpython.com/blog/building-a-remote-controlled-skate-ramp/)
