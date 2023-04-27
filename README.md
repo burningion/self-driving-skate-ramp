@@ -17,9 +17,9 @@ This project is inspired by the [Jetracer](https://github.com/NVIDIA-AI-IOT/jetr
 
 For steering, it uses a [linear actuator](https://amzn.to/3WPIkHX) hooked up to the truck of the skateboard with an [electric skateboard motor mount](https://amzn.to/40eZ0eV). My original prototype attempted to use a right and left motor to control steering, but this just didn't work at all. (The ramp just kind of jumped around.)
 
-The linear actuator is attached to the board with two 1/4" steel plates (originally shelves from Home Depot), which are bolted through to board to a 1/4" steel plate on the other side. Originally I had screws attaching the linear actuator, but these almost immediately pulled out.
+The linear actuator is attached to the board with two 1/4" steel plates (originally shelves from Home Depot), which are bolted through to board to a 1/4" steel plate on the other side. Originally I had screws attaching the linear actuator, but these almost immediately pulled out from the forces of steering the board.
 
-To control the actuator, I use a [Teensy 3.2](https://www.pjrc.com/store/teensy32.html) and two relays. I wired the relays so that the polarity of electricity can be reversed. (So positive can become negative, and vice versa.)
+To control the actuator, I use a [Teensy 3.2](https://www.pjrc.com/store/teensy32.html) and two relays. I wired the relays so that the polarity of electricity can be reversed. (So positive can become negative, and vice versa. This allows for extending or retracting the actuator.)
 
 My original prototype of the ramp just had small enough of clearance from the ground to be skateable. This proved terrifying, as the ramp was unstable on two axis at the same time.
 
