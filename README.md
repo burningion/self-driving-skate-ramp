@@ -42,3 +42,20 @@ Given the description of the project is a self driving ramp, this isn't actually
 ## Accompanying Blog Post
 
 Lives at [makeartwithpython.com](https://www.makeartwithpython.com/blog/building-a-remote-controlled-skate-ramp/)
+
+## Adding Self-Driving Capabilities
+
+I'm planning on using ROS2 to add self-driving capabilities to the project.
+
+For this I'm using Dusty's [jetson-containers](https://github.com/dusty-nv/jetson-containers/) to run ROS2 in a container.
+
+The `docker_run.sh` script from there is being used here:
+
+```bash
+# in the jetson-containers repo directory to build:
+$ ./scripts/docker_build_ros.sh --distro=foxy --package=desktop --with-pytorch
+# to run ros2, in this directory after build:
+$ ./scripts/docker_run.sh -c ros:foxy-pytorch-l4t-r35.3.1
+```
+
+I also plan on using the librealsense2 Python library, for which I've included a binary build here.
