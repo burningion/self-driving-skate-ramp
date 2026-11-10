@@ -3,7 +3,7 @@
 RealSense D455 -> H.264 (WebRTC via MediaMTX) + MJPEG fallback, with IMU overlay, over Tailscale.
 
 Also records runs. While control_steering.py is running, everything is written
-at full rate to one Rerun file per session in RUN_DIR: colour (JPEG), depth
+at full rate to one Rerun file per session in RUN_DIR: colour and left infrared (JPEG), depth
 (16-bit PNG, lossless), raw IMU, and the control loop's state. The recording
 starts when control_steering.py starts and ends a few seconds after it stops.
 
@@ -21,6 +21,10 @@ W, H, CAM_FPS = 640, 480, 30   # capture mode (must be supported by the camera)
 OUT_SCALE  = 0.5               # output size (0.5 -> 640x240 with depth); keep dimensions even
 OUT_FPS    = 10
 SHOW_DEPTH = True
+LIVE_VIEW  = "ir"              # what the live stream shows next to depth at startup: "ir" or "color".
+                               # Switchable from the web page; both are always recorded.
+EMITTER    = False             # IR dot projector. Off = clean infrared image, but weaker depth on
+                               # plain surfaces in dim light. On = the infrared image is covered in dots.
 DEPTH_MAX_MM = 6000
 USE_IMU    = True
 IMU_HZ     = 200
@@ -40,6 +44,7 @@ cond = threading.Condition()
 latest_jpg, frame_id = None, 0
 mjpeg_clients = 0
 mjpeg_lock = threading.Lock()
+live_view = LIVE_VIEW          # changed by POST /view (the toggle on the web page)
 
 imu_lock = threading.Lock()
 imu = {"available": False, "accel": [0, 0, 0], "gyro": [0, 0, 0], "roll": 0.0, "pitch": 0.0}
@@ -129,7 +134,7 @@ class Recorder(threading.Thread):
         super().__init__(name="recorder")
         self.q = queue.Queue()
         self.rec = None
-        self.name = None                 # file name of the open recording, for the web page
+        self.file = None                 # file name of the open recording, for the web page
         self.calibration = None          # set by capture() once the camera is open
         self._frames_queued = 0
         self._last_control = -1e9
@@ -137,14 +142,14 @@ class Recorder(threading.Thread):
         self._last_state = None
 
     # ---- called from other threads ----
-    def frame(self, t, color, depth):
+    def frame(self, t, color, depth, ir):
         if self.rec is None:
             return
         if self._frames_queued >= self.MAX_QUEUED_FRAMES:
             bump("rec_drop")
             return
         self._frames_queued += 1
-        self.q.put(("frame", t, (color.copy(), None if depth is None else depth.copy())))
+        self.q.put(("frame", t, tuple(None if a is None else a.copy() for a in (color, depth, ir))))
 
     def imu(self, kind, t, xyz):
         if self.rec is not None:
@@ -202,8 +207,8 @@ class Recorder(threading.Thread):
         cal = self.calibration
         if cal:
             rec.log("camera/calibration", rr.TextDocument(json.dumps(cal, indent=1), media_type="text/plain"), static=True)
-            for name in ("color", "depth"):
-                k = cal[name]
+            # the left infrared imager is the depth camera's viewpoint: same intrinsics
+            for name, k in (("color", cal["color"]), ("depth", cal["depth"]), ("ir", cal["depth"])):
                 rec.log(f"camera/{name}", rr.Pinhole(focal_length=[k["fx"], k["fy"]], principal_point=[k["ppx"], k["ppy"]],
                                                      resolution=[k["width"], k["height"]]), static=True)
         for path in ("imu/accel", "imu/gyro"):
@@ -213,7 +218,8 @@ class Recorder(threading.Thread):
         rec.send_blueprint(rrb.Blueprint(
             rrb.Horizontal(
                 rrb.Vertical(
-                    rrb.Spatial2DView(origin="camera/color", name="color"),
+                    rrb.Horizontal(rrb.Spatial2DView(origin="camera/color", name="color"),
+                                   rrb.Spatial2DView(origin="camera/ir", name="infrared")),
                     rrb.Spatial2DView(origin="camera/depth", name="depth"),
                     rrb.TextLogView(origin="control/state", name="state"),
                 ),
@@ -226,8 +232,8 @@ class Recorder(threading.Thread):
                 ),
             ),
             collapse_panels=True))
-        self.rec, self.name = rec, run + ".rrd"
-        print("recording ->", os.path.join(RUN_DIR, self.name), flush=True)
+        self.rec, self.file = rec, run + ".rrd"
+        print("recording ->", os.path.join(RUN_DIR, self.file), flush=True)
 
     def _close(self):
         if self.rec is None:
@@ -235,13 +241,16 @@ class Recorder(threading.Thread):
         rec, self.rec = self.rec, None
         rec.flush()
         rec.disconnect()
-        print("recording closed:", self.name, flush=True)
-        self.name = None
+        print("recording closed:", self.file, flush=True)
+        self.file = None
 
-    def _log_frame(self, color, depth):
-        ok, jpg = cv2.imencode(".jpg", color, [cv2.IMWRITE_JPEG_QUALITY, REC_JPEG_Q])
-        if ok:
-            self.rec.log("camera/color", rr.EncodedImage(contents=jpg.tobytes(), media_type="image/jpeg"))
+    def _log_frame(self, color, depth, ir):
+        for name, img in (("color", color), ("ir", ir)):
+            if img is None:
+                continue
+            ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, REC_JPEG_Q])
+            if ok:
+                self.rec.log(f"camera/{name}", rr.EncodedImage(contents=jpg.tobytes(), media_type="image/jpeg"))
         if depth is not None:
             # RLE strategy: lossless, ~5 ms a frame (default PNG settings take ~35 ms)
             ok, png = cv2.imencode(".png", depth, [cv2.IMWRITE_PNG_STRATEGY, cv2.IMWRITE_PNG_STRATEGY_RLE])
@@ -298,8 +307,8 @@ def control_snapshot():
     with control_lock:
         msg, age = control["msg"], time.monotonic() - control["at"]
     if msg is None or age > 1.0:
-        return {"state": "OFFLINE", "faults": ["control_steering.py is not running"], "recording": recorder.name}
-    return dict(msg, recording=recorder.name)
+        return {"state": "OFFLINE", "faults": ["control_steering.py is not running"], "recording": recorder.file, "view": live_view}
+    return dict(msg, recording=recorder.file, view=live_view)
 
 # ---------- IMU (opened directly on the motion sensor) ----------
 def on_motion(fr):
@@ -367,9 +376,9 @@ def capture():
     pipe, cfg = rs.pipeline(), rs.config()
     cfg.enable_stream(rs.stream.color, W, H, rs.format.bgr8, CAM_FPS)
     cfg.enable_stream(rs.stream.depth, W, H, rs.format.z16, CAM_FPS)
+    cfg.enable_stream(rs.stream.infrared, 1, W, H, rs.format.y8, CAM_FPS)   # 1 = left imager
     profile = pipe.start(cfg)
-    depth_sensor = profile.get_device().first_depth_sensor()
-    depth_sensor.set_option(rs.option.emitter_enabled, 0)   # projector off
+    profile.get_device().first_depth_sensor().set_option(rs.option.emitter_enabled, 1 if EMITTER else 0)
     dev = profile.get_device()
     print("camera:", dev.get_info(rs.camera_info.name), dev.get_info(rs.camera_info.serial_number))
     recorder.calibration = read_calibration(profile)
@@ -382,15 +391,18 @@ def capture():
             if not ok:
                 continue
             bump("video")
-            color_f, depth_f = f.get_color_frame(), f.get_depth_frame()
+            color_f, depth_f, ir_f = f.get_color_frame(), f.get_depth_frame(), f.get_infrared_frame(1)
             if not color_f:
                 continue
             img = np.asanyarray(color_f.get_data())
-            recorder.frame(frame_time(color_f), img, np.asanyarray(depth_f.get_data()) if depth_f else None)
+            ir = np.asanyarray(ir_f.get_data()) if ir_f else None
+            recorder.frame(frame_time(color_f), img, np.asanyarray(depth_f.get_data()) if depth_f else None, ir)
             now = time.monotonic()
             if now - last_out < period:
                 continue
             last_out = now
+            if live_view == "ir" and ir is not None:
+                img = cv2.cvtColor(ir, cv2.COLOR_GRAY2BGR)
             if SHOW_DEPTH:
                 d = colorize_depth(np.asanyarray(depth_f.get_data())) if depth_f else np.zeros_like(img)
                 if d.shape[:2] != img.shape[:2]:
@@ -440,8 +452,11 @@ html,body{margin:0;height:100%;background:#111;color:#eee;font:14px ui-monospace
 #mode a{color:#8cf}
 #state{position:fixed;bottom:12px;left:10px;background:rgba(0,0,0,.6);padding:8px 12px;border-radius:8px;white-space:pre;line-height:1.4;pointer-events:none;z-index:2;font-weight:bold}
 #state small{font-weight:normal;color:#ccc}
+#view{position:fixed;top:34px;right:10px;z-index:2;display:flex;border-radius:8px;overflow:hidden}
+#view button{font:inherit;padding:8px 14px;border:0;background:rgba(0,0,0,.6);color:#aaa;cursor:pointer}
+#view button.on{background:#8cf;color:#111;font-weight:bold}
 </style></head><body>
-<div id="mode"></div><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
+<div id="mode"></div><div id="view"><button data-v="ir">IR</button><button data-v="color">color</button></div><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
 <script>
 const mjpeg = new URLSearchParams(location.search).has('mjpeg');
 let v;
@@ -482,9 +497,17 @@ async function poll(){
 }
 poll();
 const st=document.getElementById('state'), colors={ARMED:'#f55',READY:'#5d5',REARM:'#fc3',FAULT:'#fc3',OFFLINE:'#999'};
+const vb=document.getElementById('view'); let viewAt=0;
+function showView(x){ for(const b of vb.children) b.className=b.dataset.v===x?'on':''; }
+vb.onclick=async e=>{
+  const x=e.target.dataset.v; if(!x) return;
+  showView(x); viewAt=Date.now();
+  try{ await fetch('/view?v='+x,{method:'POST'}); }catch(err){}
+};
 async function pollState(){
   let d;
   try{ d=await (await fetch('/state')).json(); }catch(e){ d={state:'OFFLINE',faults:['no connection']}; }
+  if(d.view && Date.now()-viewAt>1000) showView(d.view);   // the stream is shared: follow switches made by other viewers
   st.style.color=colors[d.state]||'#eee';
   st.textContent=d.state+(d.recording?'  \\u25cf REC':'');
   const lines=[...(d.faults||[])];
@@ -514,6 +537,16 @@ class Handler(BaseHTTPRequestHandler):
             self._mjpeg()
         else:
             self._send(404, "text/plain", b"not found")
+
+    def do_POST(self):
+        global live_view
+        path, _, query = self.path.partition("?")
+        view = query[2:] if query.startswith("v=") else None
+        if path != "/view" or view not in ("ir", "color"):
+            return self._send(404, "text/plain", b"not found")
+        live_view = view
+        print(f"live view -> {view} (from {self.client_address[0]})", flush=True)
+        self._send(200, "application/json", json.dumps({"view": view}).encode())
 
     def _send(self, code, ctype, body):
         self.send_response(code)
