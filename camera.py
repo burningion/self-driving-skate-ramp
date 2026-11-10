@@ -368,11 +368,12 @@ def capture():
     cfg.enable_stream(rs.stream.color, W, H, rs.format.bgr8, CAM_FPS)
     cfg.enable_stream(rs.stream.depth, W, H, rs.format.z16, CAM_FPS)
     profile = pipe.start(cfg)
+    depth_sensor = profile.get_device().first_depth_sensor()
+    depth_sensor.set_option(rs.option.emitter_enabled, 0)   # projector off
     dev = profile.get_device()
     print("camera:", dev.get_info(rs.camera_info.name), dev.get_info(rs.camera_info.serial_number))
     recorder.calibration = read_calibration(profile)
     motion = start_imu(dev) if USE_IMU else None
-
     encoder = None
     period, last_out = 1.0 / OUT_FPS, 0.0
     try:
