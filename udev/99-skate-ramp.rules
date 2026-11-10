@@ -1,0 +1,19 @@
+# Install:
+#   sudo cp udev/99-skate-ramp.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+
+# Teensy: flash and talk to it without root, and keep ModemManager from probing it.
+# (Same as PJRC's 00-teensy.rules, Teensy 3.x lines only.)
+ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="04*", ENV{ID_MM_DEVICE_IGNORE}="1", ENV{ID_MM_PORT_IGNORE}="1"
+KERNEL=="ttyACM*", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="04*", MODE:="0666", RUN:="/bin/stty -F /dev/%k raw -echo"
+KERNEL=="hidraw*", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="04*", MODE:="0666"
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="04*", MODE:="0666"
+
+# VESC: keep ModemManager from probing it.
+ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ENV{ID_MM_DEVICE_IGNORE}="1", ENV{ID_MM_PORT_IGNORE}="1"
+
+# PS4 controller: raw HID reports readable (read-only), so control_steering.py
+# can use the continuous report stream as a "controller is still in range"
+# heartbeat. First line is USB, second is Bluetooth.
+KERNEL=="hidraw*", ATTRS{idVendor}=="054c", MODE="0664"
+KERNEL=="hidraw*", KERNELS=="*054C:*", MODE="0664"

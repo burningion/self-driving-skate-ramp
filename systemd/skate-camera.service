@@ -1,0 +1,14 @@
+[Unit]
+Description=Ramp camera stream (camera.py)
+Wants=mediamtx.service
+After=mediamtx.service
+
+[Service]
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/Development/self-driving-skate-ramp/.venv/bin/python %h/Development/self-driving-skate-ramp/camera.py
+# camera.py exits if Tailscale or the camera isn't up yet; keep trying.
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

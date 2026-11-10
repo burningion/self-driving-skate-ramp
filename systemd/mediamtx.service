@@ -1,0 +1,11 @@
+[Unit]
+Description=MediaMTX (WebRTC/RTSP server for the ramp camera)
+
+[Service]
+WorkingDirectory=%h/mediamtx
+ExecStart=%h/mediamtx/mediamtx %h/mediamtx/mediamtx.yml
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
