@@ -15,6 +15,12 @@ Python 3.12), run headless over Tailscale.
 
 Recording is tied to the control script: a run file is opened when
 `control_steering.py` starts and closed a few seconds after it stops.
+The phone page shows the name of the file being written (bottom left, under
+`REC`) and, once it is closed, `saved <file>`. **stop recording** (right
+side) closes the file while `control_steering.py` keeps running; the button
+then becomes **start recording**, which opens a new file. Stopping by hand
+only lasts for that session: the next start of `control_steering.py` records
+again.
 
 ## Hardware assumed
 

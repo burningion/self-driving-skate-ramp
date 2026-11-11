@@ -6,7 +6,8 @@ with IMU overlay, over Tailscale. The live view is front and rear side by side, 
 Also records runs. While control_steering.py is running, everything is written
 at full rate to one Rerun file per session in RUN_DIR: front colour and left infrared (JPEG),
 front depth (16-bit PNG, lossless), the rear camera (JPEG), raw IMU, and the control loop's state. The recording
-starts when control_steering.py starts and ends a few seconds after it stops.
+starts when control_steering.py starts and ends a few seconds after it stops. The web page
+shows the file name and has a button to stop it early (and start a new file).
 
 Run with the project venv (.venv/bin/python camera.py): it has rerun-sdk, and
 falls through to the system pyrealsense2.
@@ -148,6 +149,9 @@ class Recorder(threading.Thread):
         self.q = queue.Queue()
         self.rec = None
         self.file = None                 # file name of the open recording, for the web page
+        self.last_file = None            # the recording closed most recently
+        self.paused = False              # stopped from the web page; cleared when control_steering.py goes quiet
+        self._last_msg = {}
         self.calibration = None          # set by capture() once the camera is open
         self._frames_queued = 0
         self._frames_lock = threading.Lock()
@@ -197,11 +201,14 @@ class Recorder(threading.Thread):
                 kind = None
             now = time.monotonic()
             if kind == "control":
-                self._last_control = now
+                self._last_control, self._last_msg = now, data
             active = now - self._last_control < REC_IDLE_S
-            if active and self.rec is None:
-                self._open(data if kind == "control" else {})
-            elif not active and self.rec is not None:
+            if not active:
+                self.paused = False          # the next run of control_steering.py records again
+            want = active and not self.paused
+            if want and self.rec is None:
+                self._open(self._last_msg)
+            elif not want and self.rec is not None:
                 self._close()
             if self.rec is not None and LOCK_EXPOSURE and now >= relock_at:
                 exposure_locked.set()        # also re-locks after a reset from the web page
@@ -281,7 +288,7 @@ class Recorder(threading.Thread):
         rec.flush()
         rec.disconnect()
         print("recording closed:", self.file, flush=True)
-        self.file = None
+        self.file, self.last_file = None, self.file
 
     def _log_jpeg(self, path, img):
         ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, REC_JPEG_Q])
@@ -361,9 +368,9 @@ def control_snapshot():
     with control_lock:
         msg, age = control["msg"], time.monotonic() - control["at"]
     if msg is None or age > 1.0:
-        return {"state": "OFFLINE", "faults": ["control_steering.py is not running"], "recording": recorder.file, "view": live_view,
-                "exposure": exposure_state()}
-    return dict(msg, recording=recorder.file, view=live_view, exposure=exposure_state())
+        msg = {"state": "OFFLINE", "faults": ["control_steering.py is not running"]}
+    return dict(msg, recording=recorder.file, last_recording=recorder.last_file, rec_paused=recorder.paused,
+                view=live_view, exposure=exposure_state())
 
 # ---------- IMU (opened directly on the motion sensor) ----------
 def on_motion(fr):
@@ -700,11 +707,13 @@ html,body{margin:0;height:100%;background:#111;color:#eee;font:14px ui-monospace
 #view{position:fixed;top:34px;right:10px;z-index:2;display:flex;border-radius:8px;overflow:hidden}
 #view button{font:inherit;padding:8px 14px;border:0;background:rgba(0,0,0,.6);color:#aaa;cursor:pointer}
 #view button.on{background:#8cf;color:#111;font-weight:bold}
-#exp{position:fixed;top:78px;right:10px;z-index:2;font:inherit;padding:8px 14px;border:0;border-radius:8px;background:#8cf;color:#111;font-weight:bold;cursor:pointer}
-#exp:disabled{background:rgba(0,0,0,.6);color:#aaa;font-weight:normal;cursor:default}
-#exp small{display:block;font-weight:normal;font-size:11px}
+#exp,#rec{position:fixed;top:78px;right:10px;z-index:2;font:inherit;padding:8px 14px;border:0;border-radius:8px;background:#8cf;color:#111;font-weight:bold;cursor:pointer}
+#rec{top:134px}
+#rec.stop{background:#f55}
+#exp:disabled,#rec:disabled{background:rgba(0,0,0,.6);color:#aaa;font-weight:normal;cursor:default}
+#exp small,#rec small{display:block;font-weight:normal;font-size:11px}
 </style></head><body>
-<div id="mode"></div><div id="view"><button data-v="ir">front IR</button><button data-v="color">front color</button></div><button id="exp" disabled>reset exposure<small></small></button><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
+<div id="mode"></div><div id="view"><button data-v="ir">front IR</button><button data-v="color">front color</button></div><button id="exp" disabled>reset exposure<small></small></button><button id="rec" disabled>stop recording<small></small></button><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
 <script>
 const mjpeg = new URLSearchParams(location.search).has('mjpeg');
 let v;
@@ -761,14 +770,29 @@ eb.onclick=async()=>{
   showExp('adjusting'); expAt=Date.now();
   try{ await fetch('/exposure',{method:'POST'}); }catch(err){}
 };
+const rb=document.getElementById('rec'); let recAt=0, recOn=false;
+function showRec(d){
+  recOn=!!d.recording;
+  rb.disabled=!(d.recording||d.rec_paused);
+  rb.className=d.recording?'stop':'';
+  rb.firstChild.textContent=d.recording||!d.rec_paused?'stop recording':'start recording';
+  rb.lastChild.textContent=d.recording?'':d.rec_paused?'stopped by hand':'starts with control_steering.py';
+}
+rb.onclick=async()=>{
+  rb.disabled=true; rb.lastChild.textContent=recOn?'stopping...':'starting...'; recAt=Date.now();
+  try{ await fetch('/record?on='+(recOn?0:1),{method:'POST'}); }catch(err){}
+};
 async function pollState(){
   let d;
   try{ d=await (await fetch('/state')).json(); }catch(e){ d={state:'OFFLINE',faults:['no connection']}; }
   if(d.view && Date.now()-viewAt>1000) showView(d.view);   // the stream is shared: follow switches made by other viewers
   if(d.exposure && Date.now()-expAt>1000) showExp(d.exposure);
   st.style.color=colors[d.state]||'#eee';
+  if(Date.now()-recAt>1000) showRec(d);
   st.textContent=d.state+(d.recording?'  \\u25cf REC':'');
   const lines=[...(d.faults||[])];
+  if(d.recording) lines.unshift(d.recording);
+  else if(d.last_recording) lines.push('saved '+d.last_recording);
   if(d.state==='REARM') lines.push('release R1');
   for(const [m,v] of Object.entries(d.vesc||{})) if(v) lines.push(`${m} ${v.erpm} erpm  ${v.v_in.toFixed(1)} V  ${v.current_in.toFixed(1)} A`);
   if(lines.length){ const s=document.createElement('small'); s.textContent='\\n'+lines.join('\\n'); st.append(s); }
@@ -803,6 +827,10 @@ class Handler(BaseHTTPRequestHandler):
             reset_exposure()
             print(f"exposure reset (from {self.client_address[0]}): {exposure_state()}", flush=True)
             return self._send(200, "application/json", json.dumps({"exposure": exposure_state()}).encode())
+        if path == "/record" and query in ("on=0", "on=1"):
+            recorder.paused = query == "on=0"
+            print(f"recording {'stopped' if recorder.paused else 'started'} from the web page ({self.client_address[0]})", flush=True)
+            return self._send(200, "application/json", json.dumps({"rec_paused": recorder.paused}).encode())
         view = query[2:] if query.startswith("v=") else None
         if path != "/view" or view not in ("ir", "color"):
             return self._send(404, "text/plain", b"not found")
