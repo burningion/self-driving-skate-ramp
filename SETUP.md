@@ -180,6 +180,23 @@ Depth is not shown live, but is still recorded. Settings are at the top of
 projector). If the rear camera is unplugged its half goes black and reads
 `REAR (no camera)`; it comes back by itself when plugged in again.
 
+### Exposure
+
+While nothing is being recorded, exposure adjusts itself: `camera.py` sets the
+rear camera and the front colour camera from their own pictures (aiming for
+`AE_TARGET` brightness, but darker if more than `AE_HIGHLIGHT` of the picture
+would be blown out), and the front infrared/depth pair uses the RealSense's
+own auto-exposure. When a recording starts, all three are frozen where they
+are, and released when it ends. The log and the recording (`camera/exposure`)
+say what each was locked at.
+
+So start `control_steering.py` with the ramp in the light it will be driven
+in: if it starts in the garage and drives out into the sun, the run will be
+overexposed. `LOCK_EXPOSURE = False` keeps exposure adjusting during runs.
+
+If the RealSense stops sending pictures for 10 seconds, `camera.py` resets it
+and exits, and systemd starts it again.
+
 ## 9. Recordings
 
 Runs are written to `~/ramp-runs/<date>_<time>.rrd` at roughly 35 GB per

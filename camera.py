@@ -26,6 +26,13 @@ LIVE_VIEW  = "ir"              # what the live stream shows for the front camera
 REAR_CAM   = "auto"            # rear-facing webcam: "auto" = the first USB camera that isn't the RealSense,
                                # or a device path like "/dev/video0", or None for no rear camera.
 REAR_W, REAR_H, REAR_FPS = 640, 480, 30
+# Exposure. While idle, camera.py keeps adjusting the exposure of the rear camera and the front colour
+# camera itself (the front infrared/depth pair uses the RealSense's own auto-exposure). When a recording
+# starts, all of them are frozen where they are, and released again when it ends.
+AE_TARGET    = 110             # average brightness to aim for (0-255) ...
+AE_HIGHLIGHT = 0.05            # ... but go darker if more than this fraction of the picture would be blown out
+AE_MAX_EXPOSURE = 300          # longest exposure, in units of 0.1 ms. Above ~330 the cameras can't hold 30 fps
+LOCK_EXPOSURE = True           # False = keep adjusting during recordings
 EMITTER    = False             # IR dot projector. Off = clean infrared image, but weaker depth on
                                # plain surfaces in dim light. On = the infrared image is covered in dots.
 USE_IMU    = True
@@ -50,6 +57,8 @@ live_view = LIVE_VIEW          # changed by POST /view (the toggle on the web pa
 
 imu_lock = threading.Lock()
 imu = {"available": False, "accel": [0, 0, 0], "gyro": [0, 0, 0], "roll": 0.0, "pitch": 0.0}
+
+exposure_locked = threading.Event()   # set while a recording is open (if LOCK_EXPOSURE)
 
 control_lock = threading.Lock()
 control = {"msg": None, "at": 0.0}    # newest state packet from control_steering.py
@@ -153,6 +162,12 @@ class Recorder(threading.Thread):
         if self._reserve():
             self.q.put(("rear", t, img))
 
+    def note(self, text):
+        """A line for the recording's log (and ours), e.g. the exposure a camera was locked at."""
+        print(text, flush=True)
+        if self.rec is not None:
+            self.q.put(("note", time.time(), text))
+
     def _reserve(self):
         """True if a camera frame may be queued; counts a drop if the recorder is behind."""
         if self.rec is None:
@@ -197,6 +212,8 @@ class Recorder(threading.Thread):
                     self._log_frame(*data)
                 elif kind == "rear":
                     self._log_jpeg("camera/rear", data)
+                elif kind == "note":
+                    self.rec.log("camera/exposure", rr.TextLog(data))
                 elif kind == "control":
                     self._log_control(data)
                 else:
@@ -238,7 +255,7 @@ class Recorder(threading.Thread):
                                    rrb.Spatial2DView(origin="camera/ir", name="front infrared")),
                     rrb.Horizontal(rrb.Spatial2DView(origin="camera/depth", name="front depth"),
                                    rrb.Spatial2DView(origin="camera/rear", name="rear")),
-                    rrb.TextLogView(origin="control/state", name="state"),
+                    rrb.TextLogView(name="state", contents=["control/state", "camera/exposure"]),
                 ),
                 rrb.Vertical(
                     rrb.TimeSeriesView(name="controller", contents=["control/r1", "control/stick", "control/steer", "control/jack"]),
@@ -250,11 +267,14 @@ class Recorder(threading.Thread):
             ),
             collapse_panels=True))
         self.rec, self.file = rec, run + ".rrd"
+        if LOCK_EXPOSURE:
+            exposure_locked.set()
         print("recording ->", os.path.join(RUN_DIR, self.file), flush=True)
 
     def _close(self):
         if self.rec is None:
             return
+        exposure_locked.clear()
         rec, self.rec = self.rec, None
         rec.flush()
         rec.disconnect()
@@ -371,6 +391,61 @@ def stop_imu(s):
     except Exception as e:
         print("imu stop error:", e)
 
+# ---------- exposure ----------
+class AutoExposure:
+    """
+    Sets one camera's exposure time and gain from its own pictures: aims for an average
+    brightness of AE_TARGET, but darker when that would blow out more than AE_HIGHLIGHT
+    of the picture. Does nothing while exposure_locked is set, so the camera stays at
+    whatever it had settled on when the recording started.
+    """
+    EVERY = 6                        # frames between adjustments (a change takes ~4 frames to show)
+
+    def __init__(self, name, apply, exposure, gain, exposure_range, gain_range):
+        self.name, self.apply = name, apply           # apply(exposure, gain) sets them on the camera
+        self.e_min, self.e_max = exposure_range[0], min(exposure_range[1], AE_MAX_EXPOSURE)
+        self.g_min, self.g_max = gain_range
+        self.g_step = max(1, (self.g_max - self.g_min) // 16)
+        self.exposure = int(min(max(exposure, self.e_min), self.e_max))
+        self.gain = int(min(max(gain, self.g_min), self.g_max))
+        self._n, self._locked = 0, False
+        self.apply(self.exposure, self.gain)
+
+    def update(self, img):
+        """Call with every frame (BGR)."""
+        locked = exposure_locked.is_set()
+        if locked != self._locked:
+            self._locked = locked
+            if locked:
+                recorder.note(f"{self.name} exposure locked: {self.exposure / 10:g} ms, gain {self.gain}")
+            else:
+                print(f"{self.name} exposure unlocked", flush=True)
+        self._n += 1
+        if locked or self._n % self.EVERY:
+            return
+        small = img[::8, ::8]
+        mean = max(float(small.mean()), 1.0)
+        # the brightness that only AE_HIGHLIGHT of the picture is above, in each pixel's brightest channel
+        bright = float(np.percentile(small.max(axis=2), 100 * (1 - AE_HIGHLIGHT)))
+        ratio = min(AE_TARGET / mean, 0.7 if bright >= 250 else 235 / max(bright, 1.0))
+        if 0.92 < ratio < 1.09:
+            return
+        ratio = min(max(ratio, 0.5), 2.0)
+        exposure, gain = self.exposure, self.gain
+        if ratio > 1:                # brighter: lengthen the exposure first, then add gain
+            if exposure < self.e_max:
+                exposure = min(self.e_max, max(exposure + 1, round(exposure * ratio)))
+            else:
+                gain = min(self.g_max, gain + self.g_step)
+        else:                        # darker: drop the gain first, then shorten the exposure
+            if gain > self.g_min:
+                gain = max(self.g_min, gain - self.g_step)
+            else:
+                exposure = max(self.e_min, min(exposure - 1, round(exposure * ratio)))
+        if (exposure, gain) != (self.exposure, self.gain):
+            self.exposure, self.gain = exposure, gain
+            self.apply(exposure, gain)
+
 # ---------- rear camera (USB webcam, via V4L2) ----------
 rear_lock = threading.Lock()
 rear = {"img": None, "at": 0.0}       # newest rear frame, for the live view
@@ -386,7 +461,7 @@ def find_rear_cam():
 
 def capture_rear():
     """Reads the rear webcam at full rate. Keeps retrying if it is missing or gets unplugged."""
-    cap, missing_said = None, False
+    cap, ae, missing_said = None, None, False
     while not stop.is_set():
         if cap is None:
             dev = find_rear_cam()
@@ -401,6 +476,12 @@ def capture_rear():
                           f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} "
                           f"@ {cap.get(cv2.CAP_PROP_FPS):.0f} fps", flush=True)
                     missing_said = False
+                    def apply(exposure, gain, cap=cap):
+                        cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
+                        cap.set(cv2.CAP_PROP_GAIN, gain)
+                    start = cap.get(cv2.CAP_PROP_EXPOSURE), cap.get(cv2.CAP_PROP_GAIN)   # where the camera's own auto-exposure was
+                    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)                                # 1 = manual: we set it from here on
+                    ae = AutoExposure("rear camera", apply, *start, (3, 2047), (0, 255))
                 else:
                     cap.release()
                     cap = None
@@ -418,6 +499,7 @@ def capture_rear():
             stop.wait(1)
             continue
         bump("rear")
+        ae.update(img)
         recorder.rear(time.time(), img)
         with rear_lock:
             rear["img"], rear["at"] = img, time.monotonic()
@@ -440,6 +522,32 @@ def label(img, text, x, align_right=False):
     cv2.putText(img, text, (x, th + 6), font, scale, (255, 255, 255), 1, cv2.LINE_AA)
 
 # ---------- front camera (RealSense) ----------
+FRONT_STALL_S = 10             # no pictures from the RealSense for this long: reset it and exit (systemd restarts us)
+
+def set_option(sensor, option, value):
+    """Sets a RealSense option. These occasionally fail with a USB error while streaming, so retry; never raises."""
+    for _ in range(3):
+        try:
+            sensor.set_option(option, value)
+            return True
+        except RuntimeError as e:
+            err = e
+            time.sleep(0.05)
+    print(f"could not set {option} = {value}: {err}", flush=True)
+    return False
+
+def lock_infrared(sensor, frame):
+    """Freeze the infrared/depth pair where its auto-exposure is now (switching it off holds the current values)."""
+    if not set_option(sensor, rs.option.enable_auto_exposure, 0):
+        return False
+    md = rs.frame_metadata_value
+    if frame.supports_frame_metadata(md.actual_exposure) and frame.supports_frame_metadata(md.gain_level):
+        recorder.note(f"front infrared/depth exposure locked: {frame.get_frame_metadata(md.actual_exposure) / 1000:g} ms, "
+                      f"gain {frame.get_frame_metadata(md.gain_level)}")
+    else:
+        recorder.note("front infrared/depth exposure locked")
+    return True
+
 def read_calibration(profile):
     def intrinsics(stream):
         k = profile.get_stream(stream).as_video_stream_profile().get_intrinsics()
@@ -459,24 +567,45 @@ def capture():
     cfg.enable_stream(rs.stream.depth, W, H, rs.format.z16, CAM_FPS)
     cfg.enable_stream(rs.stream.infrared, 1, W, H, rs.format.y8, CAM_FPS)   # 1 = left imager
     profile = pipe.start(cfg)
-    profile.get_device().first_depth_sensor().set_option(rs.option.emitter_enabled, 1 if EMITTER else 0)
     dev = profile.get_device()
+    stereo, rgb = dev.first_depth_sensor(), dev.first_color_sensor()
+    set_option(stereo, rs.option.emitter_enabled, 1 if EMITTER else 0)
+    set_option(stereo, rs.option.enable_auto_exposure, 1)
+    def apply(exposure, gain):
+        set_option(rgb, rs.option.exposure, exposure)
+        set_option(rgb, rs.option.gain, gain)
+    start = rgb.get_option(rs.option.exposure), rgb.get_option(rs.option.gain)
+    set_option(rgb, rs.option.enable_auto_exposure, 0)   # we set the colour exposure from here on
+    ae = AutoExposure("front colour", apply, *start, (1, 10000), (0, 128))
+    ir_locked = False
     print("front camera:", dev.get_info(rs.camera_info.name), dev.get_info(rs.camera_info.serial_number))
     recorder.calibration = read_calibration(profile)
     motion = start_imu(dev) if USE_IMU else None
     encoder = None
-    period, last_out = 1.0 / OUT_FPS, 0.0
+    period, last_out, last_frame = 1.0 / OUT_FPS, 0.0, time.monotonic()
     try:
         while not stop.is_set():
             ok, f = pipe.try_wait_for_frames(1000)   # keep draining at camera rate
             if not ok:
+                if time.monotonic() - last_frame > FRONT_STALL_S:
+                    print("front camera has stopped sending pictures - resetting it", flush=True)
+                    dev.hardware_reset()
+                    raise RuntimeError("front camera stalled")
                 continue
+            last_frame = time.monotonic()
             bump("video")
             color_f, depth_f, ir_f = f.get_color_frame(), f.get_depth_frame(), f.get_infrared_frame(1)
             if not color_f:
                 continue
             img = np.asanyarray(color_f.get_data())
             ir = np.asanyarray(ir_f.get_data()) if ir_f else None
+            ae.update(img)
+            if exposure_locked.is_set() != ir_locked and ir_f:      # if this fails it is tried again on the next frame
+                if not ir_locked:
+                    ir_locked = lock_infrared(stereo, ir_f)
+                elif set_option(stereo, rs.option.enable_auto_exposure, 1):
+                    ir_locked = False
+                    print("front infrared/depth exposure unlocked", flush=True)
             recorder.frame(frame_time(color_f), img, np.asanyarray(depth_f.get_data()) if depth_f else None, ir)
             now = time.monotonic()
             if now - last_out < period:
@@ -516,7 +645,10 @@ def capture():
     finally:
         if motion:
             stop_imu(motion)
-        pipe.stop()
+        try:
+            pipe.stop()
+        except RuntimeError as e:
+            print("front camera stop error:", e)
         print("front camera stopped")
 
 def report():
@@ -677,7 +809,20 @@ def main():
     ts_ip = subprocess.check_output(["tailscale", "ip", "-4"]).decode().split()[0]
     server = ThreadingHTTPServer((ts_ip, PORT), Handler)
     server.daemon_threads = True
-    cam = threading.Thread(target=capture)
+
+    def shutdown(*_):
+        stop.set()
+        threading.Thread(target=server.shutdown).start()
+
+    def front():
+        try:
+            capture()
+        finally:
+            if not stop.is_set():
+                print("front camera thread ended - exiting so systemd restarts us", flush=True)
+                shutdown()
+
+    cam = threading.Thread(target=front)
     cam.start()
     back = threading.Thread(target=capture_rear) if REAR_CAM is not None else None
     if back:
@@ -685,10 +830,6 @@ def main():
     recorder.start()
     threading.Thread(target=report, daemon=True).start()
     threading.Thread(target=listen_control, daemon=True).start()
-
-    def shutdown(*_):
-        stop.set()
-        threading.Thread(target=server.shutdown).start()
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
