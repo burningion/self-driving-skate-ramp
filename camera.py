@@ -565,15 +565,26 @@ def set_option(sensor, option, value):
     return False
 
 def lock_infrared(sensor, frame):
-    """Freeze the infrared/depth pair where its auto-exposure is now (switching it off holds the current values)."""
-    if not set_option(sensor, rs.option.enable_auto_exposure, 0):
-        return False
+    """
+    Freeze the infrared/depth pair where its auto-exposure is now. Just switching auto-exposure off does
+    not do that: the camera jumps to its manual exposure setting (8.5 ms by default), which in sunlight
+    is a pure white picture and no depth at all. So copy what auto-exposure had settled on, read from the
+    frame, into the manual settings (setting those also switches auto-exposure off).
+    """
     md = rs.frame_metadata_value
-    if frame.supports_frame_metadata(md.actual_exposure) and frame.supports_frame_metadata(md.gain_level):
-        recorder.note(f"front infrared/depth exposure locked: {frame.get_frame_metadata(md.actual_exposure) / 1000:g} ms, "
-                      f"gain {frame.get_frame_metadata(md.gain_level)}")
-    else:
-        recorder.note("front infrared/depth exposure locked")
+    if not (frame.supports_frame_metadata(md.actual_exposure) and frame.supports_frame_metadata(md.gain_level)):
+        if not getattr(lock_infrared, "warned", False):
+            lock_infrared.warned = True
+            print("front infrared/depth: the camera does not report its exposure, so it can't be locked - "
+                  "leaving it on auto", flush=True)
+        return False
+    exposure, gain = frame.get_frame_metadata(md.actual_exposure), frame.get_frame_metadata(md.gain_level)   # microseconds
+    e_range, g_range = sensor.get_option_range(rs.option.exposure), sensor.get_option_range(rs.option.gain)
+    if not (set_option(sensor, rs.option.exposure, min(max(exposure, e_range.min), e_range.max))
+            and set_option(sensor, rs.option.gain, min(max(gain, g_range.min), g_range.max))
+            and set_option(sensor, rs.option.enable_auto_exposure, 0)):
+        return False
+    recorder.note(f"front infrared/depth exposure locked: {exposure / 1000:g} ms, gain {gain}")
     return True
 
 def read_calibration(profile):

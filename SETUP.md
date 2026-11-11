@@ -218,7 +218,8 @@ state changes and faults, and the front camera's calibration.
 
 To look at one:
 
-- **In a browser:** `./view_run.sh` on the Jetson (newest run, or pass a
-  file), then open the URL it prints. Chrome works best.
+- **In a browser:** `./view_run.sh` on the Jetson. It lists the runs, newest
+  first; type a number (Enter takes the newest), or pass a file name to skip
+  the list. Then open the URL it prints. Chrome works best.
 - **On another machine:** copy the file over, then
   `pip install rerun-sdk==0.42.0 && rerun FILE.rrd`. Better for long runs.
