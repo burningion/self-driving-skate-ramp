@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-RealSense D455 -> H.264 (WebRTC via MediaMTX) + MJPEG fallback, with IMU overlay, over Tailscale.
+RealSense D455 (front) + USB webcam (rear) -> H.264 (WebRTC via MediaMTX) + MJPEG fallback,
+with IMU overlay, over Tailscale. The live view is front and rear side by side, labelled.
 
 Also records runs. While control_steering.py is running, everything is written
-at full rate to one Rerun file per session in RUN_DIR: colour and left infrared (JPEG), depth
-(16-bit PNG, lossless), raw IMU, and the control loop's state. The recording
+at full rate to one Rerun file per session in RUN_DIR: front colour and left infrared (JPEG),
+front depth (16-bit PNG, lossless), the rear camera (JPEG), raw IMU, and the control loop's state. The recording
 starts when control_steering.py starts and ends a few seconds after it stops.
 
 Run with the project venv (.venv/bin/python camera.py): it has rerun-sdk, and
 falls through to the system pyrealsense2.
 """
-import json, math, os, queue, shutil, socket, threading, time, signal, subprocess
+import glob, json, math, os, queue, shutil, socket, threading, time, signal, subprocess
 import cv2, numpy as np, pyrealsense2 as rs
 import rerun as rr
 import rerun.blueprint as rrb
@@ -18,14 +19,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ---------- settings ----------
 W, H, CAM_FPS = 640, 480, 30   # capture mode (must be supported by the camera)
-OUT_SCALE  = 0.5               # output size (0.5 -> 640x240 with depth); keep dimensions even
+OUT_SCALE  = 0.5               # output size (0.5 -> 640x240, front and rear side by side); keep dimensions even
 OUT_FPS    = 10
-SHOW_DEPTH = True
-LIVE_VIEW  = "ir"              # what the live stream shows next to depth at startup: "ir" or "color".
-                               # Switchable from the web page; both are always recorded.
+LIVE_VIEW  = "ir"              # what the live stream shows for the front camera at startup: "ir" or "color".
+                               # Switchable from the web page; both are always recorded (and so is depth).
+REAR_CAM   = "auto"            # rear-facing webcam: "auto" = the first USB camera that isn't the RealSense,
+                               # or a device path like "/dev/video0", or None for no rear camera.
+REAR_W, REAR_H, REAR_FPS = 640, 480, 30
 EMITTER    = False             # IR dot projector. Off = clean infrared image, but weaker depth on
                                # plain surfaces in dim light. On = the infrared image is covered in dots.
-DEPTH_MAX_MM = 6000
 USE_IMU    = True
 IMU_HZ     = 200
 H264_KBPS  = 400               # cellular-friendly; raise for more detail
@@ -35,7 +37,7 @@ PORT       = 8080
 STATE_ADDR = ("127.0.0.1", 47800)   # control_steering.py sends its state here (UDP JSON)
 RUN_DIR    = os.path.expanduser("~/ramp-runs")
 REC_IDLE_S = 5.0               # close the recording this long after control_steering.py goes quiet
-REC_MIN_FREE_GB = 20           # don't start a recording with less disk than this (a run is roughly 25 GB per hour)
+REC_MIN_FREE_GB = 20           # don't start a recording with less disk than this (a run is roughly 35 GB per hour)
 REC_JPEG_Q = 90
 
 # ---------- shared state ----------
@@ -53,7 +55,7 @@ control_lock = threading.Lock()
 control = {"msg": None, "at": 0.0}    # newest state packet from control_steering.py
 
 stats_lock = threading.Lock()
-stats = {"video": 0, "imu": 0, "h264": 0, "mjpeg": 0, "rec": 0, "rec_drop": 0}
+stats = {"video": 0, "rear": 0, "imu": 0, "h264": 0, "mjpeg": 0, "rec": 0, "rec_drop": 0}
 
 def bump(key, n=1):
     with stats_lock:
@@ -128,7 +130,7 @@ class Recorder(threading.Thread):
     which keeps them aligned to this machine's clock.
     """
 
-    MAX_QUEUED_FRAMES = 30
+    MAX_QUEUED_FRAMES = 60           # front and rear together
 
     def __init__(self):
         super().__init__(name="recorder")
@@ -137,19 +139,30 @@ class Recorder(threading.Thread):
         self.file = None                 # file name of the open recording, for the web page
         self.calibration = None          # set by capture() once the camera is open
         self._frames_queued = 0
+        self._frames_lock = threading.Lock()
         self._last_control = -1e9
         self._motors = ()
         self._last_state = None
 
     # ---- called from other threads ----
     def frame(self, t, color, depth, ir):
+        if self._reserve():
+            self.q.put(("frame", t, tuple(None if a is None else a.copy() for a in (color, depth, ir))))
+
+    def rear(self, t, img):
+        if self._reserve():
+            self.q.put(("rear", t, img))
+
+    def _reserve(self):
+        """True if a camera frame may be queued; counts a drop if the recorder is behind."""
         if self.rec is None:
-            return
-        if self._frames_queued >= self.MAX_QUEUED_FRAMES:
-            bump("rec_drop")
-            return
-        self._frames_queued += 1
-        self.q.put(("frame", t, tuple(None if a is None else a.copy() for a in (color, depth, ir))))
+            return False
+        with self._frames_lock:
+            if self._frames_queued >= self.MAX_QUEUED_FRAMES:
+                bump("rec_drop")
+                return False
+            self._frames_queued += 1
+        return True
 
     def imu(self, kind, t, xyz):
         if self.rec is not None:
@@ -173,14 +186,17 @@ class Recorder(threading.Thread):
                 self._open(data if kind == "control" else {})
             elif not active and self.rec is not None:
                 self._close()
-            if kind == "frame":
-                self._frames_queued -= 1
+            if kind in ("frame", "rear"):
+                with self._frames_lock:
+                    self._frames_queued -= 1
             if self.rec is None or kind is None:
                 continue
             try:
                 self.rec.set_time("time", timestamp=t)
                 if kind == "frame":
                     self._log_frame(*data)
+                elif kind == "rear":
+                    self._log_jpeg("camera/rear", data)
                 elif kind == "control":
                     self._log_control(data)
                 else:
@@ -218,9 +234,10 @@ class Recorder(threading.Thread):
         rec.send_blueprint(rrb.Blueprint(
             rrb.Horizontal(
                 rrb.Vertical(
-                    rrb.Horizontal(rrb.Spatial2DView(origin="camera/color", name="color"),
-                                   rrb.Spatial2DView(origin="camera/ir", name="infrared")),
-                    rrb.Spatial2DView(origin="camera/depth", name="depth"),
+                    rrb.Horizontal(rrb.Spatial2DView(origin="camera/color", name="front color"),
+                                   rrb.Spatial2DView(origin="camera/ir", name="front infrared")),
+                    rrb.Horizontal(rrb.Spatial2DView(origin="camera/depth", name="front depth"),
+                                   rrb.Spatial2DView(origin="camera/rear", name="rear")),
                     rrb.TextLogView(origin="control/state", name="state"),
                 ),
                 rrb.Vertical(
@@ -244,13 +261,15 @@ class Recorder(threading.Thread):
         print("recording closed:", self.file, flush=True)
         self.file = None
 
+    def _log_jpeg(self, path, img):
+        ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, REC_JPEG_Q])
+        if ok:
+            self.rec.log(path, rr.EncodedImage(contents=jpg.tobytes(), media_type="image/jpeg"))
+
     def _log_frame(self, color, depth, ir):
         for name, img in (("color", color), ("ir", ir)):
-            if img is None:
-                continue
-            ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, REC_JPEG_Q])
-            if ok:
-                self.rec.log(f"camera/{name}", rr.EncodedImage(contents=jpg.tobytes(), media_type="image/jpeg"))
+            if img is not None:
+                self._log_jpeg(f"camera/{name}", img)
         if depth is not None:
             # RLE strategy: lossless, ~5 ms a frame (default PNG settings take ~35 ms)
             ok, png = cv2.imencode(".png", depth, [cv2.IMWRITE_PNG_STRATEGY, cv2.IMWRITE_PNG_STRATEGY_RLE])
@@ -352,13 +371,75 @@ def stop_imu(s):
     except Exception as e:
         print("imu stop error:", e)
 
-# ---------- camera ----------
-def colorize_depth(depth_mm):
-    d8 = cv2.convertScaleAbs(depth_mm, alpha=255.0 / DEPTH_MAX_MM)
-    img = cv2.applyColorMap(255 - d8, cv2.COLORMAP_JET)  # near = red, far = blue
-    img[depth_mm == 0] = 0
-    return img
+# ---------- rear camera (USB webcam, via V4L2) ----------
+rear_lock = threading.Lock()
+rear = {"img": None, "at": 0.0}       # newest rear frame, for the live view
 
+def find_rear_cam():
+    if REAR_CAM != "auto":
+        return REAR_CAM
+    for path in sorted(glob.glob("/dev/v4l/by-id/*-video-index0")):
+        name = os.path.basename(path).lower()
+        if "realsense" not in name and "intel" not in name:
+            return path
+    return None
+
+def capture_rear():
+    """Reads the rear webcam at full rate. Keeps retrying if it is missing or gets unplugged."""
+    cap, missing_said = None, False
+    while not stop.is_set():
+        if cap is None:
+            dev = find_rear_cam()
+            if dev:
+                cap = cv2.VideoCapture(os.path.realpath(dev), cv2.CAP_V4L2)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, REAR_W)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, REAR_H)
+                cap.set(cv2.CAP_PROP_FPS, REAR_FPS)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                if cap.isOpened():
+                    print(f"rear camera: {os.path.basename(dev)} ({os.path.realpath(dev)}) "
+                          f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} "
+                          f"@ {cap.get(cv2.CAP_PROP_FPS):.0f} fps", flush=True)
+                    missing_said = False
+                else:
+                    cap.release()
+                    cap = None
+            if cap is None:
+                if not missing_said:
+                    missing_said = True
+                    print("rear camera not found" if not dev else f"rear camera {dev} would not open", "- will keep trying", flush=True)
+                stop.wait(2)
+                continue
+        ok, img = cap.read()
+        if not ok:
+            print("rear camera lost - will keep trying", flush=True)
+            cap.release()
+            cap = None
+            stop.wait(1)
+            continue
+        bump("rear")
+        recorder.rear(time.time(), img)
+        with rear_lock:
+            rear["img"], rear["at"] = img, time.monotonic()
+    if cap is not None:
+        cap.release()
+    print("rear camera stopped")
+
+def rear_frame():
+    """The newest rear frame, or None if there hasn't been one in the last second."""
+    with rear_lock:
+        return rear["img"] if time.monotonic() - rear["at"] < 1.0 else None
+
+def label(img, text, x, align_right=False):
+    """Draws a caption at the top of the live view; x is its left edge (or right edge with align_right)."""
+    font, scale = cv2.FONT_HERSHEY_SIMPLEX, 0.45
+    (tw, th), _ = cv2.getTextSize(text, font, scale, 1)
+    if align_right:
+        x -= tw
+    cv2.rectangle(img, (x - 4, 2), (x + tw + 4, th + 10), (0, 0, 0), -1)
+    cv2.putText(img, text, (x, th + 6), font, scale, (255, 255, 255), 1, cv2.LINE_AA)
+
+# ---------- front camera (RealSense) ----------
 def read_calibration(profile):
     def intrinsics(stream):
         k = profile.get_stream(stream).as_video_stream_profile().get_intrinsics()
@@ -380,7 +461,7 @@ def capture():
     profile = pipe.start(cfg)
     profile.get_device().first_depth_sensor().set_option(rs.option.emitter_enabled, 1 if EMITTER else 0)
     dev = profile.get_device()
-    print("camera:", dev.get_info(rs.camera_info.name), dev.get_info(rs.camera_info.serial_number))
+    print("front camera:", dev.get_info(rs.camera_info.name), dev.get_info(rs.camera_info.serial_number))
     recorder.calibration = read_calibration(profile)
     motion = start_imu(dev) if USE_IMU else None
     encoder = None
@@ -403,13 +484,22 @@ def capture():
             last_out = now
             if live_view == "ir" and ir is not None:
                 img = cv2.cvtColor(ir, cv2.COLOR_GRAY2BGR)
-            if SHOW_DEPTH:
-                d = colorize_depth(np.asanyarray(depth_f.get_data())) if depth_f else np.zeros_like(img)
-                if d.shape[:2] != img.shape[:2]:
-                    d = cv2.resize(d, (img.shape[1], img.shape[0]))
-                img = np.hstack((img, d))
+            if REAR_CAM is not None:
+                back = rear_frame()
+                have_rear = back is not None
+                if not have_rear:
+                    back = np.zeros_like(img)
+                elif back.shape[:2] != img.shape[:2]:
+                    back = cv2.resize(back, (img.shape[1], img.shape[0]))
+                img = np.hstack((img, back))
             img = cv2.resize(img, None, fx=OUT_SCALE, fy=OUT_SCALE, interpolation=cv2.INTER_AREA)
             img = np.ascontiguousarray(img[: img.shape[0] // 2 * 2, : img.shape[1] // 2 * 2])  # even dims for x264
+            if REAR_CAM is not None:      # captions either side of the seam, clear of the page's overlays
+                mid = img.shape[1] // 2
+                label(img, "FRONT", mid - 8, align_right=True)
+                label(img, "REAR" if have_rear else "REAR (no camera)", mid + 8)
+            else:
+                label(img, "FRONT", img.shape[1] // 2 - 30)
 
             if encoder is None:
                 encoder = H264Out(img.shape[1], img.shape[0], OUT_FPS)
@@ -427,7 +517,7 @@ def capture():
         if motion:
             stop_imu(motion)
         pipe.stop()
-        print("camera stopped")
+        print("front camera stopped")
 
 def report():
     last = time.monotonic()
@@ -456,7 +546,7 @@ html,body{margin:0;height:100%;background:#111;color:#eee;font:14px ui-monospace
 #view button{font:inherit;padding:8px 14px;border:0;background:rgba(0,0,0,.6);color:#aaa;cursor:pointer}
 #view button.on{background:#8cf;color:#111;font-weight:bold}
 </style></head><body>
-<div id="mode"></div><div id="view"><button data-v="ir">IR</button><button data-v="color">color</button></div><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
+<div id="mode"></div><div id="view"><button data-v="ir">front IR</button><button data-v="color">front color</button></div><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
 <script>
 const mjpeg = new URLSearchParams(location.search).has('mjpeg');
 let v;
@@ -589,6 +679,9 @@ def main():
     server.daemon_threads = True
     cam = threading.Thread(target=capture)
     cam.start()
+    back = threading.Thread(target=capture_rear) if REAR_CAM is not None else None
+    if back:
+        back.start()
     recorder.start()
     threading.Thread(target=report, daemon=True).start()
     threading.Thread(target=listen_control, daemon=True).start()
@@ -602,6 +695,8 @@ def main():
     print(f"open http://{ts_ip}:{PORT}/   (MJPEG fallback: /?mjpeg)")
     server.serve_forever()
     cam.join()
+    if back:
+        back.join()
     recorder.join()
 
 if __name__ == "__main__":

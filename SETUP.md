@@ -9,7 +9,7 @@ Python 3.12), run headless over Tailscale.
 | Piece | What it does | How it starts |
 |---|---|---|
 | `mediamtx` | Serves the live video over WebRTC / RTSP | systemd user service, at boot |
-| `camera.py` | Reads the RealSense, feeds the live view, serves the phone page, records runs | systemd user service (`skate-camera`), at boot |
+| `camera.py` | Reads the RealSense (front) and the USB webcam (rear), feeds the live view, serves the phone page, records runs | systemd user service (`skate-camera`), at boot |
 | `control_steering.py` | PS4 controller -> VESCs + Teensy. The only thing that moves the ramp | by hand, each session |
 | Teensy firmware | Drives the steering and jack relays, with its own watchdog | flashed once |
 
@@ -18,7 +18,9 @@ Recording is tied to the control script: a run file is opened when
 
 ## Hardware assumed
 
-- RealSense D455 on a USB 3 port.
+- RealSense D455 on a USB 3 port, facing forwards.
+- A USB webcam facing backwards (a Logitech C920 here). Any UVC webcam works;
+  `camera.py` picks the first USB camera that is not the RealSense.
 - Two VESCs. The back one is on USB, the front one is reached through it over CAN.
 - Teensy 3.2 on USB. Relay pins: A9 steer right, A8 steer left, A6 jack up, A7 jack down.
 - PS4 controller (DualShock 4), over USB or Bluetooth. Pairing notes are in
@@ -131,7 +133,8 @@ systemctl --user stop skate-camera        # frees the camera for other tools
 ```
 
 A healthy log line looks like
-`video 30.0/s  imu 450/s  h264 9.0/s ...`. While recording, `rec` should
+`video 30.0/s  rear 30.0/s  imu 450/s  h264 9.0/s ...` (`video` is the front
+camera, `rear` the webcam). While recording, `rec` should
 read 30 and `rec_drop` 0.
 
 After changing a file in `systemd/`, copy it again and run
@@ -169,17 +172,22 @@ with `tailscale ip -4`):
 | `http://<jetson>:8889/cam/` | Video only (WebRTC) |
 | `rtsp://<jetson>:8554/cam` | Video only (VLC, ffplay) |
 
-The live video is a downscaled, low-bitrate view for a phone hotspot. Settings
-are at the top of `camera.py`, including `LIVE_VIEW` (`"ir"` or `"color"`)
-and `EMITTER` (the IR dot projector).
+The live video is a downscaled, low-bitrate view for a phone hotspot: the
+front camera on the left and the rear camera on the right, each labelled.
+Depth is not shown live, but is still recorded. Settings are at the top of
+`camera.py`, including `LIVE_VIEW` (front camera: `"ir"` or `"color"`),
+`REAR_CAM` (`"auto"`, a device path, or `None`) and `EMITTER` (the IR dot
+projector). If the rear camera is unplugged its half goes black and reads
+`REAR (no camera)`; it comes back by itself when plugged in again.
 
 ## 9. Recordings
 
-Runs are written to `~/ramp-runs/<date>_<time>.rrd` at roughly 25 GB per
+Runs are written to `~/ramp-runs/<date>_<time>.rrd` at roughly 35 GB per
 hour, and recording will not start with less than 20 GB free. Each file
-holds colour, infrared and depth at 30 fps, raw IMU, the control loop's
+holds front colour, infrared and depth and the rear camera (`camera/rear`),
+all at 30 fps, raw IMU, the control loop's
 state at 50 Hz (inputs, commanded speed, VESC telemetry, Teensy outputs),
-state changes and faults, and the camera calibration.
+state changes and faults, and the front camera's calibration.
 
 To look at one:
 
