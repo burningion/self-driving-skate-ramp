@@ -82,7 +82,7 @@ OpenCV and falls through to the system `pyrealsense2`:
 
 ```
 uv venv --python /usr/bin/python3 --system-site-packages .venv
-uv pip install --python .venv/bin/python "rerun-sdk==0.42.0" opencv-python-headless
+uv pip install --python .venv/bin/python "rerun-sdk==0.43.0" opencv-python-headless
 ```
 
 Keep the Rerun version the same on any machine that opens the recordings.
@@ -222,4 +222,4 @@ To look at one:
   first; type a number (Enter takes the newest), or pass a file name to skip
   the list. Then open the URL it prints. Chrome works best.
 - **On another machine:** copy the file over, then
-  `pip install rerun-sdk==0.42.0 && rerun FILE.rrd`. Better for long runs.
+  `pip install rerun-sdk==0.43.0 && rerun FILE.rrd`. Better for long runs.

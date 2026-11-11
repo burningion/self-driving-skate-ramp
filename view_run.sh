@@ -3,7 +3,7 @@
 #   ./view_run.sh            pick a run from the list of runs in ~/ramp-runs (Enter = newest)
 #   ./view_run.sh FILE.rrd   a specific run
 # Ctrl-C to stop. For big runs it is faster to copy the file to a laptop and
-# open it there:  pip install rerun-sdk==0.42.0 && rerun FILE.rrd
+# open it there:  pip install rerun-sdk==0.43.0 && rerun FILE.rrd
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 runs_dir=~/ramp-runs
