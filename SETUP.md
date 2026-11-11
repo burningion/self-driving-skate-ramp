@@ -192,7 +192,11 @@ say what each was locked at.
 
 So start `control_steering.py` with the ramp in the light it will be driven
 in: if it starts in the garage and drives out into the sun, the run will be
-overexposed. `LOCK_EXPOSURE = False` keeps exposure adjusting during runs.
+overexposed. If the light does change mid-run, tap **reset exposure** on the
+phone page (top right; greyed out when nothing is locked): exposure adjusts to the current light for
+`AE_RESET_S` (3 seconds), then locks again, and the new values are logged.
+Restarting `control_steering.py` does the same thing, as a new recording.
+`LOCK_EXPOSURE = False` keeps exposure adjusting during runs.
 
 If the RealSense stops sending pictures for 10 seconds, `camera.py` resets it
 and exits, and systemd starts it again.

@@ -33,6 +33,7 @@ AE_TARGET    = 110             # average brightness to aim for (0-255) ...
 AE_HIGHLIGHT = 0.05            # ... but go darker if more than this fraction of the picture would be blown out
 AE_MAX_EXPOSURE = 300          # longest exposure, in units of 0.1 ms. Above ~330 the cameras can't hold 30 fps
 LOCK_EXPOSURE = True           # False = keep adjusting during recordings
+AE_RESET_S   = 3.0             # "reset exposure" on the web page: adjust for this long mid-recording, then lock again
 EMITTER    = False             # IR dot projector. Off = clean infrared image, but weaker depth on
                                # plain surfaces in dim light. On = the infrared image is covered in dots.
 USE_IMU    = True
@@ -59,6 +60,7 @@ imu_lock = threading.Lock()
 imu = {"available": False, "accel": [0, 0, 0], "gyro": [0, 0, 0], "roll": 0.0, "pitch": 0.0}
 
 exposure_locked = threading.Event()   # set while a recording is open (if LOCK_EXPOSURE)
+relock_at = 0.0                       # after a reset from the web page: when to lock again (time.monotonic())
 
 control_lock = threading.Lock()
 control = {"msg": None, "at": 0.0}    # newest state packet from control_steering.py
@@ -201,6 +203,8 @@ class Recorder(threading.Thread):
                 self._open(data if kind == "control" else {})
             elif not active and self.rec is not None:
                 self._close()
+            if self.rec is not None and LOCK_EXPOSURE and now >= relock_at:
+                exposure_locked.set()        # also re-locks after a reset from the web page
             if kind in ("frame", "rear"):
                 with self._frames_lock:
                     self._frames_queued -= 1
@@ -267,8 +271,6 @@ class Recorder(threading.Thread):
             ),
             collapse_panels=True))
         self.rec, self.file = rec, run + ".rrd"
-        if LOCK_EXPOSURE:
-            exposure_locked.set()
         print("recording ->", os.path.join(RUN_DIR, self.file), flush=True)
 
     def _close(self):
@@ -321,6 +323,19 @@ class Recorder(threading.Thread):
 
 recorder = Recorder()
 
+def exposure_state():
+    """For the web page: "auto" (adjusting freely), "locked", or "adjusting" (a reset during a recording)."""
+    if exposure_locked.is_set():
+        return "locked"
+    return "adjusting" if recorder.rec is not None and LOCK_EXPOSURE else "auto"
+
+def reset_exposure():
+    """Mid-recording: let exposure adjust to the light as it is now for AE_RESET_S, then lock it again."""
+    global relock_at
+    if recorder.rec is not None and LOCK_EXPOSURE:
+        relock_at = time.monotonic() + AE_RESET_S
+        exposure_locked.clear()
+
 def frame_time(fr):
     """Seconds since the epoch. The RealSense aligns its stamps to this machine's clock ("global time")."""
     if fr.get_frame_timestamp_domain() == rs.timestamp_domain.global_time:
@@ -346,8 +361,9 @@ def control_snapshot():
     with control_lock:
         msg, age = control["msg"], time.monotonic() - control["at"]
     if msg is None or age > 1.0:
-        return {"state": "OFFLINE", "faults": ["control_steering.py is not running"], "recording": recorder.file, "view": live_view}
-    return dict(msg, recording=recorder.file, view=live_view)
+        return {"state": "OFFLINE", "faults": ["control_steering.py is not running"], "recording": recorder.file, "view": live_view,
+                "exposure": exposure_state()}
+    return dict(msg, recording=recorder.file, view=live_view, exposure=exposure_state())
 
 # ---------- IMU (opened directly on the motion sensor) ----------
 def on_motion(fr):
@@ -433,10 +449,15 @@ class AutoExposure:
         ratio = min(max(ratio, 0.5), 2.0)
         exposure, gain = self.exposure, self.gain
         if ratio > 1:                # brighter: lengthen the exposure first, then add gain
-            if exposure < self.e_max:
-                exposure = min(self.e_max, max(exposure + 1, round(exposure * ratio)))
-            else:
+            # Exposure only moves in whole steps, and in sunlight it is down at 2 or 3, where one step
+            # is +50%: too bright, so it would step back down, and up again, for ever. When the next
+            # step up would overshoot like that, creep up on the gain instead.
+            if exposure < self.e_max and (exposure + 1) / exposure <= ratio * 1.1:
+                exposure = min(self.e_max, max(exposure + 1, int(exposure * ratio)))
+            elif gain < self.g_max:
                 gain = min(self.g_max, gain + self.g_step)
+            elif exposure < self.e_max and ratio >= 1.25:      # out of gain: take the coarse step
+                exposure, gain = exposure + 1, self.g_min
         else:                        # darker: drop the gain first, then shorten the exposure
             if gain > self.g_min:
                 gain = max(self.g_min, gain - self.g_step)
@@ -576,7 +597,9 @@ def capture():
         set_option(rgb, rs.option.gain, gain)
     start = rgb.get_option(rs.option.exposure), rgb.get_option(rs.option.gain)
     set_option(rgb, rs.option.enable_auto_exposure, 0)   # we set the colour exposure from here on
-    ae = AutoExposure("front colour", apply, *start, (1, 10000), (0, 128))
+    # Gain no lower than 64 (the camera's default): below that the colour sensor clips short of white
+    # (at gain 0 a fully blown-out picture reads as flat grey, 118), which looks correctly exposed to AutoExposure.
+    ae = AutoExposure("front colour", apply, *start, (1, 10000), (64, 128))
     ir_locked = False
     print("front camera:", dev.get_info(rs.camera_info.name), dev.get_info(rs.camera_info.serial_number))
     recorder.calibration = read_calibration(profile)
@@ -677,8 +700,11 @@ html,body{margin:0;height:100%;background:#111;color:#eee;font:14px ui-monospace
 #view{position:fixed;top:34px;right:10px;z-index:2;display:flex;border-radius:8px;overflow:hidden}
 #view button{font:inherit;padding:8px 14px;border:0;background:rgba(0,0,0,.6);color:#aaa;cursor:pointer}
 #view button.on{background:#8cf;color:#111;font-weight:bold}
+#exp{position:fixed;top:78px;right:10px;z-index:2;font:inherit;padding:8px 14px;border:0;border-radius:8px;background:#8cf;color:#111;font-weight:bold;cursor:pointer}
+#exp:disabled{background:rgba(0,0,0,.6);color:#aaa;font-weight:normal;cursor:default}
+#exp small{display:block;font-weight:normal;font-size:11px}
 </style></head><body>
-<div id="mode"></div><div id="view"><button data-v="ir">front IR</button><button data-v="color">front color</button></div><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
+<div id="mode"></div><div id="view"><button data-v="ir">front IR</button><button data-v="color">front color</button></div><button id="exp" disabled>reset exposure<small></small></button><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
 <script>
 const mjpeg = new URLSearchParams(location.search).has('mjpeg');
 let v;
@@ -726,10 +752,20 @@ vb.onclick=async e=>{
   showView(x); viewAt=Date.now();
   try{ await fetch('/view?v='+x,{method:'POST'}); }catch(err){}
 };
+const eb=document.getElementById('exp'); let expAt=0;
+function showExp(x){
+  eb.disabled=x!=='locked';
+  eb.lastChild.textContent={locked:'locked for this recording',adjusting:'adjusting...',auto:'not locked: adjusting by itself'}[x]||'';
+}
+eb.onclick=async()=>{
+  showExp('adjusting'); expAt=Date.now();
+  try{ await fetch('/exposure',{method:'POST'}); }catch(err){}
+};
 async function pollState(){
   let d;
   try{ d=await (await fetch('/state')).json(); }catch(e){ d={state:'OFFLINE',faults:['no connection']}; }
   if(d.view && Date.now()-viewAt>1000) showView(d.view);   // the stream is shared: follow switches made by other viewers
+  if(d.exposure && Date.now()-expAt>1000) showExp(d.exposure);
   st.style.color=colors[d.state]||'#eee';
   st.textContent=d.state+(d.recording?'  \\u25cf REC':'');
   const lines=[...(d.faults||[])];
@@ -763,6 +799,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         global live_view
         path, _, query = self.path.partition("?")
+        if path == "/exposure":
+            reset_exposure()
+            print(f"exposure reset (from {self.client_address[0]}): {exposure_state()}", flush=True)
+            return self._send(200, "application/json", json.dumps({"exposure": exposure_state()}).encode())
         view = query[2:] if query.startswith("v=") else None
         if path != "/view" or view not in ("ir", "color"):
             return self._send(404, "text/plain", b"not found")
