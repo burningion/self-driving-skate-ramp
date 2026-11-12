@@ -3,7 +3,6 @@
 # requires-python = ">=3.10"
 # dependencies = [
 #     "pyserial>=3.5",
-#     "pyPS4Controller>=1.2",
 # ]
 # ///
 """
@@ -22,13 +21,13 @@ Autodetection (on startup)
   * VESC:     probes USB serial ports for a VESC (asks for its firmware version)
   * CAN VESC: asks the USB VESC to ping its CAN bus and uses the VESC it finds
   * Teensy:   USB vendor ID 0x16C0 (PJRC), else the one leftover serial port
-  * Joystick: first /dev/input/js*
+  * Controller: the first DualShock 4's raw HID device (/dev/hidraw*)
 Any of these can be forced with command-line options. Use --detect to just
 print what was found and exit.
 
 How the control works
 ---------------------
-* Controller callbacks ONLY record what is being held.
+* The controller thread ONLY records what is being held.
 * A control loop runs at CONTROL_HZ and every tick computes the target speed,
   ramps toward it, and sends it to both VESCs (a steady stream, so the VESC's
   own timeout acts as a watchdog if this script dies).
@@ -58,17 +57,20 @@ Run:  uv run control_steering.py        (or ./control_steering.py after chmod +x
 """
 
 import argparse
+import fcntl
 import glob
 import json
 import logging
 import os
 import queue
+import re
 import select
 import signal
 import socket
 import struct
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 
 log = logging.getLogger("ramp")
@@ -126,7 +128,7 @@ TEENSY_FW_VERSION = 2          # must match FW_VERSION in control_steering.ino
 TEENSY_HEARTBEAT_TIMEOUT_S = 0.25   # must match HEARTBEAT_TIMEOUT_MS in the firmware
 
 TELEMETRY_STALE_S = 0.5        # VESC / Teensy status older than this is a fault
-CONTROLLER_STALE_S = 0.3       # controller sensor stream silent this long = out of range
+CONTROLLER_STALE_S = 0.3       # controller report stream silent this long = out of range
 
 STATE_ADDR = ("127.0.0.1", 47800)   # loop state goes here as JSON over UDP, every tick
 
@@ -596,76 +598,6 @@ class NullTeensy:
 
 
 # =============================================================================
-# Controller heartbeat
-# =============================================================================
-
-
-class ControllerHeartbeat(threading.Thread):
-    """
-    The joystick interface only reports changes, so if the radio link drops
-    while R1 is held nothing says so until the kernel gives up on the
-    controller. Underneath, though, the controller sends raw HID reports
-    continuously whether or not anything changed. This watches that raw stream
-    (hidraw): silence means the controller is out of reach.
-
-    Needs read access to the controller's hidraw device (udev/99-skate-ramp.rules).
-    If it can't be read, `available` stays False and nothing is checked.
-    """
-
-    def __init__(self):
-        super().__init__(daemon=True, name="pad-heartbeat")
-        self.available = False
-        self._last = 0.0
-        self._warned = False
-
-    @staticmethod
-    def _find():
-        for uevent in glob.glob("/sys/class/hidraw/hidraw*/device/uevent"):
-            try:
-                with open(uevent) as f:
-                    if ":0000054C:" in f.read().upper():        # Sony's vendor ID, USB or Bluetooth
-                        return "/dev/" + uevent.split("/")[4]
-            except OSError:
-                pass
-        return None
-
-    def run(self):
-        while True:
-            path = self._find()
-            fd = None
-            if path:
-                try:
-                    fd = os.open(path, os.O_RDONLY)
-                except PermissionError:
-                    if not self._warned:
-                        self._warned = True
-                        log.warning("can't read %s, so a controller that goes out of range won't be "
-                                    "noticed quickly. Install udev/99-skate-ramp.rules to fix.", path)
-                except OSError:
-                    pass
-            if fd is None:
-                self.available = False
-                time.sleep(1.0)
-                continue
-            self._last = time.monotonic()
-            self.available = True
-            try:
-                while True:
-                    readable, _, _ = select.select([fd], [], [], 1.0)
-                    if readable:
-                        if not os.read(fd, 4096):
-                            break
-                        self._last = time.monotonic()
-            except OSError:
-                pass                      # device went away; look for it again
-            finally:
-                self.available = False
-                os.close(fd)
-
-    def stale(self):
-        return self.available and time.monotonic() - self._last > CONTROLLER_STALE_S
-
-# =============================================================================
 # Autodetection
 # =============================================================================
 
@@ -744,13 +676,6 @@ def find_can_id(vesc, forced=None):
     return ids[0]
 
 
-def find_joystick(forced=None):
-    if forced:
-        return forced
-    js = sorted(glob.glob("/dev/input/js*"))
-    return js[0] if js else "/dev/input/js0"   # listen() will wait for it to appear
-
-
 class _FakePort:
     def __init__(self, device):
         self.device, self.vid, self.pid, self.product, self.serial_number = device, None, None, "", None
@@ -786,9 +711,9 @@ class SharedInputs:
             return Inputs(s.connected, s.safety, list(s.held), s.stick, s.vertical, s.horizontal, s.speed)
 
 
-def apply_deadzone(raw):
-    """raw: pyPS4Controller axis value (-32767..32767) -> -1..1 with deadzone."""
-    x = max(-1.0, min(1.0, raw / 32767.0))
+def apply_deadzone(x):
+    """Stick position -1..1 -> -1..1 with the deadzone cut out."""
+    x = max(-1.0, min(1.0, x))
     if abs(x) < STICK_DEADZONE:
         return 0.0
     mag = (abs(x) - STICK_DEADZONE) / (1.0 - STICK_DEADZONE)
@@ -825,14 +750,14 @@ def step_toward(current, target, max_delta):
 
 
 class ControlLoop(threading.Thread):
-    def __init__(self, inputs, vesc, teensy, can_ids, heartbeat=None, checks=True, telemetry=False):
+    def __init__(self, inputs, vesc, teensy, can_ids, pad=None, checks=True, telemetry=False):
         """can_ids: {motor: None for the USB VESC, or its CAN id}. Motors not in it are skipped."""
         super().__init__(daemon=True, name="control")
         self.inputs = inputs
         self.vesc = vesc
         self.teensy = teensy
         self.can_ids = can_ids
-        self.heartbeat = heartbeat
+        self.pad = pad
         self.checks = checks
         self.telemetry = telemetry
         self.stop_event = threading.Event()
@@ -877,7 +802,7 @@ class ControlLoop(threading.Thread):
         out = []
         if not s.connected:
             out.append("controller not connected")
-        elif self.heartbeat and self.heartbeat.stale():
+        elif self.pad and self.pad.stale():
             out.append("controller signal lost")
         if not self.vesc.connected:
             out.append("VESC USB link down")
@@ -998,95 +923,188 @@ class ControlLoop(threading.Thread):
 # PS4 controller -> shared inputs
 # =============================================================================
 
+def HIDIOCGFEATURE(length):
+    """ioctl number for "read a feature report of up to `length` bytes" on a hidraw device."""
+    return (3 << 30) | (length << 16) | (ord("H") << 8) | 0x07
 
-def make_controller(inputs, **kwargs):
-    from pyPS4Controller.controller import Controller
 
-    def press(name):
-        def fn(s):
-            if name in s.held:
-                s.held.remove(name)
-            s.held.append(name)
-        return fn
+DS4_HID_ID = re.compile(r"HID_ID=\w+:0000054C:0000(05C4|09CC|0BA0)\b", re.I)   # DS4 v1, v2, Sony USB dongle
+FACE_BITS = {"square": 0x10, "x": 0x20, "circle": 0x40, "triangle": 0x80}
+HAT_UP, HAT_RIGHT, HAT_DOWN, HAT_LEFT = (7, 0, 1), (1, 2, 3), (3, 4, 5), (5, 6, 7)
 
-    def release(name):
-        def fn(s):
-            if name in s.held:
-                s.held.remove(name)
-        return fn
 
-    def set_attr(attr, value):
-        def fn(s):
-            setattr(s, attr, value)
-        return fn
+def find_pad(forced=None):
+    """The hidraw device of the first DualShock 4 (USB or Bluetooth), or None."""
+    if forced:
+        return forced
+    for uevent in sorted(glob.glob("/sys/class/hidraw/hidraw*/device/uevent")):
+        try:
+            with open(uevent) as f:
+                if DS4_HID_ID.search(f.read()):
+                    return "/dev/" + uevent.split("/")[4]
+        except OSError:
+            pass
+    return None
 
-    def change_speed(direction):
-        def fn(s):
-            new = round(min(SPEED_MAX, max(SPEED_MIN, s.speed + direction * SPEED_STEP)), 2)
-            if new == s.speed:
-                log.info("speed already at %s (%d%%)", "max" if direction > 0 else "min", round(new * 100))
+
+def pad_controls(report):
+    """
+    The 9 control bytes of a DS4 input report (sticks, buttons, triggers), or
+    None if it isn't one or is corrupt. Same layout whichever way it arrives:
+      USB                 report 0x01, 64 bytes, controls at [1:10]
+      Bluetooth, basic    report 0x01, 10 bytes, controls at [1:10]
+      Bluetooth, full     report 0x11, 78 bytes, controls at [3:12], CRC32 at the end
+    """
+    if len(report) == 78 and report[0] == 0x11:
+        if zlib.crc32(b"\xa1" + report[:74]) != int.from_bytes(report[74:], "little"):
+            return None
+        return report[3:12]
+    if len(report) in (10, 64) and report[0] == 0x01:
+        return report[1:10]
+    return None
+
+
+def change_speed(s, direction):
+    new = round(min(SPEED_MAX, max(SPEED_MIN, s.speed + direction * SPEED_STEP)), 2)
+    if new == s.speed:
+        log.info("speed already at %s (%d%%)", "max" if direction > 0 else "min", round(new * 100))
+        return
+    s.speed = new
+    x = BUTTON_ACTIONS["x"]
+    log.info("speed %d%%  (X = %s ERPM)", round(new * 100),
+             ", ".join(f"{m} {min(MAX_ERPM, abs(v) * new):.0f}" for m, v in x.items()))
+
+
+class Pad(threading.Thread):
+    """
+    Reads the controller's raw HID reports (hidraw) and keeps the shared
+    inputs up to date.
+
+    Raw reports rather than /dev/input/js*, because the joystick interface
+    only reports changes: if the radio link drops while R1 is held, nothing
+    says so. A DS4 sends raw reports continuously (hundreds a second) whether
+    or not anything changed, so silence means it is out of reach -- stale().
+
+    Over Bluetooth the controller starts in a basic mode that also only
+    reports changes. Reading feature report 0x02 switches it to full reports
+    until it disconnects. (The kernel's Sony drivers do that themselves, but
+    the Jetson kernel doesn't have them; once switched, /dev/input/js* goes
+    quiet under the generic driver, which is the other reason not to use it.)
+
+    Needs read access to the hidraw device (udev/99-skate-ramp.rules).
+    """
+
+    def __init__(self, inputs, path=None):
+        super().__init__(daemon=True, name="pad")
+        self.inputs = inputs
+        self.forced = path
+        self._open = False
+        self._last = 0.0
+        self._warned = False
+        self._prev = None            # (stick byte, d-pad + face byte, shoulder bits) last applied
+        self._down = set()           # buttons down in the last report
+
+    def stale(self):
+        """Device is there but has gone silent: out of range, or its battery died."""
+        return self._open and time.monotonic() - self._last > CONTROLLER_STALE_S
+
+    def run(self):
+        while True:
+            path = find_pad(self.forced)
+            fd = None
+            if path:
+                try:
+                    fd = os.open(path, os.O_RDONLY)
+                except PermissionError:
+                    if not self._warned:
+                        self._warned = True
+                        log.error("can't read the controller at %s. Install udev/99-skate-ramp.rules.", path)
+                except OSError:
+                    pass
+            if fd is None:
+                time.sleep(1.0)
+                continue
+            try:
+                self._read(fd, path)
+            except OSError:
+                pass                      # device went away; look for it again
+            finally:
+                self._open = False
+                os.close(fd)
+                self._disconnected()
+
+    def _read(self, fd, path):
+        try:
+            buf = bytearray(64)
+            buf[0] = 0x02
+            fcntl.ioctl(fd, HIDIOCGFEATURE(len(buf)), buf)
+        except OSError as e:
+            log.warning("controller: couldn't ask for full reports (%s); over Bluetooth it will "
+                        "keep reading as 'signal lost' whenever nothing on it is moving", e)
+        self._prev, self._down = None, set()
+        self._last = time.monotonic()
+        self._open = True
+        connected = False
+        while True:
+            readable, _, _ = select.select([fd], [], [], 1.0)
+            if not readable:
+                continue
+            report = os.read(fd, 4096)
+            if not report:
                 return
-            s.speed = new
-            x = BUTTON_ACTIONS["x"]
-            log.info("speed %d%%  (X = %s ERPM)", round(new * 100),
-                     ", ".join(f"{m} {min(MAX_ERPM, abs(v) * new):.0f}" for m, v in x.items()))
-        return fn
+            c = pad_controls(report)
+            if c is None:
+                continue
+            self._last = time.monotonic()
+            if not connected:
+                connected = True
+                log.info("controller connected (%s)", path)
+            self._apply(c)
 
-    class RampController(Controller):
-        _l2_down = False
+    def _apply(self, c):
+        ly, pad_face, shoulder = c[1], c[4], c[5] & 0x07
+        key = (ly, pad_face, shoulder)
+        if key == self._prev:
+            return                        # nothing we use changed (the usual case)
+        self._prev = key
 
-        # --- live speed: L1 faster, L2 slower ---
-        def on_L1_press(self):   inputs.update(change_speed(+1))
-        def on_L1_release(self): pass
+        down = {name for name, bit in FACE_BITS.items() if pad_face & bit}
+        if shoulder & 0x01: down.add("L1")
+        if shoulder & 0x02: down.add("R1")
+        if shoulder & 0x04: down.add("L2")
+        pressed, self._down = down - self._down, down
 
-        # L2 is an analog trigger: it reports continuously while held, so only
-        # count it once per pull.
-        def on_L2_press(self, value):
-            if not self._l2_down:
-                self._l2_down = True
-                inputs.update(change_speed(-1))
+        hat = pad_face & 0x0F             # 0 = up, clockwise to 7 = up-left, 8 = released
+        vertical = (hat in HAT_UP) - (hat in HAT_DOWN)
+        horizontal = (hat in HAT_RIGHT) - (hat in HAT_LEFT)
+        # Stick byte: 0 = fully up, 255 = fully down.
+        stick = apply_deadzone((ly - 128) / 127.0)
 
-        def on_L2_release(self):
-            self._l2_down = False
+        def fn(s):
+            s.connected = True
+            s.safety = "R1" in down
+            for name in FACE_BITS:
+                if name in pressed or (name not in down and name in s.held):
+                    if name in s.held:
+                        s.held.remove(name)
+                    if name in pressed:
+                        s.held.append(name)       # most recent last
+            s.stick = -stick if STICK_INVERT else stick
+            s.vertical, s.horizontal = vertical, horizontal
+            if "L1" in pressed:
+                change_speed(s, +1)
+            if "L2" in pressed:
+                change_speed(s, -1)
+        self.inputs.update(fn)
 
-        # --- dead-man switch ---
-        def on_R1_press(self):   inputs.update(set_attr("safety", True))
-        def on_R1_release(self): inputs.update(set_attr("safety", False))
-
-        # --- face buttons ---
-        def on_x_press(self):          inputs.update(press("x"))
-        def on_x_release(self):        inputs.update(release("x"))
-        def on_circle_press(self):     inputs.update(press("circle"))
-        def on_circle_release(self):   inputs.update(release("circle"))
-        def on_square_press(self):     inputs.update(press("square"))
-        def on_square_release(self):   inputs.update(release("square"))
-        def on_triangle_press(self):   inputs.update(press("triangle"))
-        def on_triangle_release(self): inputs.update(release("triangle"))
-
-        # --- D-pad -> Teensy actuators ---
-        def on_up_arrow_press(self):           inputs.update(set_attr("vertical", 1))
-        def on_down_arrow_press(self):         inputs.update(set_attr("vertical", -1))
-        def on_up_down_arrow_release(self):    inputs.update(set_attr("vertical", 0))
-        def on_left_arrow_press(self):         inputs.update(set_attr("horizontal", -1))
-        def on_right_arrow_press(self):        inputs.update(set_attr("horizontal", 1))
-        def on_left_right_arrow_release(self): inputs.update(set_attr("horizontal", 0))
-
-        # --- left stick (vertical) -> proportional speed ---
-        # pyPS4Controller: up = negative values, down = positive values.
-        def _stick(self, value):
-            v = apply_deadzone(value)
-            inputs.update(set_attr("stick", -v if STICK_INVERT else v))
-
-        def on_L3_up(self, value):   self._stick(value)
-        def on_L3_down(self, value): self._stick(value)
-        def on_L3_y_at_rest(self):   inputs.update(set_attr("stick", 0.0))
-
-        # silence the library's default printing for stick X
-        def on_L3_left(self, value):  pass
-        def on_L3_right(self, value): pass
-        def on_L3_x_at_rest(self):    pass
-
-    return RampController(**kwargs)
+    def _disconnected(self):
+        def reset(s):
+            if s.connected:
+                log.warning("controller disconnected")
+            s.connected = s.safety = False
+            s.held.clear()
+            s.stick, s.vertical, s.horizontal = 0.0, 0, 0
+        self.inputs.update(reset)
 
 # =============================================================================
 # Main
@@ -1102,7 +1120,8 @@ def main():
     ap.add_argument("--usb-only", action="store_true", help="run even if no CAN VESC is found")
     ap.add_argument("--teensy-port", help="force the Teensy serial port (default: autodetect)")
     ap.add_argument("--no-teensy", action="store_true", help="run without the Teensy")
-    ap.add_argument("--joystick", help="force the joystick device (default: first /dev/input/js*)")
+    ap.add_argument("--controller", metavar="HIDRAW",
+                    help="force the controller's raw HID device, e.g. /dev/hidraw0 (default: autodetect)")
     ap.add_argument("--detect", action="store_true", help="print what autodetection finds and exit")
     ap.add_argument("--dry-run", action="store_true", help="no hardware; log commands with -v")
     ap.add_argument("--no-checks", action="store_true",
@@ -1149,8 +1168,7 @@ def main():
             raise SystemExit("No Teensy found. Pass --teensy-port, or --no-teensy to run without it.")
         log.info("teensy: %s", teensy_port or "disabled")
 
-        joystick = find_joystick(args.joystick)
-        log.info("joystick: %s", joystick)
+        log.info("controller: %s", find_pad(args.controller) or "not found (yet)")
 
         if args.detect:
             vesc.close()
@@ -1165,15 +1183,11 @@ def main():
             if not args.no_teensy:
                 log.info("teensy: firmware v%d, watchdog OK", TEENSY_FW_VERSION)
 
-    joystick = find_joystick(args.joystick)
-
     # ---- run ----
     inputs = SharedInputs()
-    heartbeat = None
-    if not args.dry_run:
-        heartbeat = ControllerHeartbeat()
-        heartbeat.start()
-    loop = ControlLoop(inputs, vesc, teensy, can_ids, heartbeat=heartbeat,
+    pad = Pad(inputs, args.controller)
+    pad.start()
+    loop = ControlLoop(inputs, vesc, teensy, can_ids, pad=pad,
                        checks=not args.no_checks, telemetry=args.telemetry)
     loop.start()
 
@@ -1186,31 +1200,9 @@ def main():
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    controller = make_controller(inputs, interface=joystick, connecting_using_ds4drv=False)
-
-    def on_connect():
-        log.info("controller connected")
-        inputs.update(lambda s: setattr(s, "connected", True))
-
-    def on_disconnect():
-        log.warning("controller disconnected")
-
-        def reset(s):
-            s.connected = s.safety = False
-            s.held.clear()
-            s.stick, s.vertical, s.horizontal = 0.0, 0, 0
-        inputs.update(reset)
-
     try:
-        while not stopping.is_set():
-            try:
-                controller.listen(timeout=30, on_connect=on_connect, on_disconnect=on_disconnect)
-            except (SystemExit, Exception) as e:
-                if stopping.is_set():
-                    break
-                log.warning("controller listener ended (%r); retrying", e)
-            on_disconnect()
-            time.sleep(1.0)
+        while not stopping.wait(1.0):
+            pass
     except KeyboardInterrupt:
         pass
     finally:

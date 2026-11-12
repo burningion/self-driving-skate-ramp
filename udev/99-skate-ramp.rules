@@ -12,8 +12,8 @@ SUBSYSTEMS=="usb", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="04*", MODE:="0666
 # VESC: keep ModemManager from probing it.
 ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ENV{ID_MM_DEVICE_IGNORE}="1", ENV{ID_MM_PORT_IGNORE}="1"
 
-# PS4 controller: raw HID reports readable (read-only), so control_steering.py
-# can use the continuous report stream as a "controller is still in range"
-# heartbeat. First line is USB, second is Bluetooth.
+# PS4 controller: raw HID reports readable (read-only). control_steering.py
+# reads buttons and sticks from them, and uses the continuous report stream as
+# its "controller is still in range" check. First line is USB, second is Bluetooth.
 KERNEL=="hidraw*", ATTRS{idVendor}=="054c", MODE="0664"
 KERNEL=="hidraw*", KERNELS=="*054C:*", MODE="0664"

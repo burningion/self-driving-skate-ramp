@@ -64,7 +64,9 @@ Install these first. The repo is expected at
 
 One udev file covers flashing the Teensy without root, keeping ModemManager
 away from the Teensy and VESC serial ports, and letting the control script
-read the controller's raw report stream (its "still in range" check).
+read the controller's raw HID reports. That is the only way it reads the
+controller (buttons, stick, and the "still in range" check), so without this
+rule it reports "controller not connected".
 
 ```
 sudo cp udev/99-skate-ramp.rules /etc/udev/rules.d/
