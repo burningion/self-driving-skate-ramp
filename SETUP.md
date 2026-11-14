@@ -437,3 +437,42 @@ as flat, edges farther than 4 m ahead are ignored, and pictures where the
 sidewalk meets a driveway or another path usually give no result
 (`edges` = 0) rather than a wrong one.
 
+
+## 12. Trying the self-steering on recorded runs
+
+`autosteer.py` holds the self-steering: an estimate of where the ramp is on
+the sidewalk (from the pictures' geometry and the gyro) and the decision to
+tap the steering left or right. It does not touch hardware and nothing calls
+it while driving yet. `steering_replay.py` tries it out on runs that have a
+`geometry.parquet` (section 11). Only the tables are needed, so this runs on
+the Jetson too:
+
+```bash
+uv run steering_replay.py ~/ramp-export/2026-11-11_16-58-31 ~/ramp-export/2026-11-11_09-44-21
+```
+
+It prints four things:
+
+1. **fit**: how the ramp moves, worked out from the runs: speed per ERPM, and
+   how fast the actuator changes the steer angle. Written to
+   `steering_model.json` beside the runs (`--model FILE` reuses one instead).
+2. **check**: the model's prediction 2 s ahead from the recorded taps alone,
+   against what the camera then saw.
+3. **replay**: the estimator run over each recording, and whether the taps the
+   controller wanted match the driver's. `replay_<run>.png` in the run folder
+   shows every drive: camera against estimate, steer angle, and both sets of taps.
+4. **simulate**: the controller driving the fitted model from starts up to
+   30 cm off centre and 8° off straight, with measurement errors and dropouts
+   taken from the real pictures. `steering_sim.png` beside the runs shows them.
+   `--sims 0` skips this.
+
+Settings are the fields of `Params` in `autosteer.py`; try one without editing
+with `--set settle_m=1.5`. The measured lengths are there too: the wheelbase
+(33", axle to axle), with the front camera taken to be over the front, steered
+axle.
+
+**Limits to know about:** the simulation drives the same kind of model the
+controller assumes, so it shows how the controller copes with noise, dropouts
+and an actuator that is faster or slower than thought, not whether the model is
+right; step 2 is the check on that. The sidewalk is straight in all of it. The
+estimate uses the front camera in both directions.
