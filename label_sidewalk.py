@@ -2,6 +2,7 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
+#     "scipy",
 #     "torch",
 #     "transformers>=4.40",
 #     "pillow",
