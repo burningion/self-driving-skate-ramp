@@ -476,3 +476,43 @@ controller assumes, so it shows how the controller copes with noise, dropouts
 and an actuator that is faster or slower than thought, not whether the model is
 right; step 2 is the check on that. The sidewalk is straight in all of it. The
 estimate uses the front camera in both directions.
+
+## 13. Training the small sidewalk network (training machine)
+
+The model that labels the pictures (section 11) is far too big for the Jetson.
+`train_sidewalk.py` trains a small network to give the same answer, from those
+labels, and writes it out as `sidewalk_net.onnx` for the Jetson. Give it every
+run that has labels:
+
+```bash
+uv run train_sidewalk.py ~/ramp-export/2026-11-11_*
+```
+
+It takes a few minutes on a 4090 and writes `sidewalk_net/` beside the runs:
+`sidewalk_net.onnx` (the network: a 480x640 RGB picture with values 0..1 in,
+the chance that each pixel is sidewalk out), `sidewalk_net.pt` (PyTorch
+weights), `training.json` and `preview.jpg`.
+
+A fifth of every run, in 10 s stretches, is kept aside and never learned from
+(`--val-run NAME` keeps a whole run aside instead, which is the harder and
+more honest test once there are runs from more than one place). The numbers
+printed at the end are on those pictures:
+
+- how much of the sidewalk it and the big model agree on;
+- what the steering uses: how far the offset and heading worked out from its
+  answer are from those worked out from the big model's. The estimator assumes
+  about 3 cm and 1.5° of error per picture, so differences well under that cost nothing.
+
+Look at `preview.jpg` too: its answer is tinted green and the big model's is
+outlined in red.
+
+Then copy `sidewalk_net.onnx` to the Jetson and check it runs there, and how fast:
+
+```bash
+/usr/src/tensorrt/bin/trtexec --onnx=sidewalk_net.onnx --fp16 --saveEngine=sidewalk_net.engine
+```
+
+**Limits to know about:** it only knows sidewalks like the ones it was trained
+on. The pictures are varied as it learns (mirrored, tilted, tinted, shadowed),
+which helps with light and position, but not with a sidewalk that looks
+different. More runs in more places is what fixes that.
