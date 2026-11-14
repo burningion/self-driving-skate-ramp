@@ -344,3 +344,92 @@ depth_m = cv2.imread(f"{run}/{row.depth}", cv2.IMREAD_UNCHANGED) * 0.001    # de
 To run the export scripts themselves on another machine (from copied `.rrd`
 files), it needs `rerun-sdk==0.43.0`, `pandas` and `opencv-python-headless`.
 
+## 11. Finding the sidewalk in the pictures (training machine)
+
+This turns exported runs into the numbers a steering controller needs: how
+far the ramp is from the middle of the sidewalk and how far it is pointed off
+the sidewalk's direction, for every labelled picture. It runs on the machine
+with the GPU, from a clone of this repo, on the folders copied over in
+section 10. Both scripts declare their own dependencies, so `uv run` sets
+them up on first use.
+
+**Step 1: label the sidewalk.** Needs the GPU.
+
+```
+uv run label_sidewalk.py ~/ramp-export/2026-11-11_16-58-31
+uv run label_sidewalk.py ~/ramp-export/*/              # every run
+```
+
+This runs a pretrained street-scene segmentation model (Mask2Former trained
+on Mapillary Vistas, about 900 MB, downloaded on first use) over one picture
+in three from the front colour and rear cameras, and writes the result into
+the run's `labels/` folder. `--every 1` labels every picture; `--half` is
+faster. Stopping it and running it again carries on where it left off.
+
+Then **look at `labels/preview_color.jpg` and `labels/preview_rear.jpg`**:
+the area counted as sidewalk is tinted green. The camera sits much lower than
+anything the model was trained on, so this is the step most likely to need
+attention. The model's "Road" class is counted as sidewalk on purpose, since
+that is the usual mistake from down there. If grass is being tinted, or the
+sidewalk isn't, that has to be fixed (a different model, or other class
+words) before the next step means anything.
+
+**Step 2: turn labels into positions.** No GPU needed.
+
+```
+uv run sidewalk_geometry.py ~/ramp-export/*/
+```
+
+For each run it prints the camera pose it used, how many pictures gave a
+result, and the sidewalk width it measured, and writes:
+
+| File | What |
+|---|---|
+| `geometry.parquet` | One row per labelled front picture |
+| `geometry_rear.parquet` | One row per labelled rear picture |
+| `camera_pose.json` | Each camera's height and tilt, as used |
+| `geometry_preview_color.jpg`, `geometry_preview_rear.jpg` | Pictures with the fitted edges (red) and horizon drawn on |
+
+Columns, the same for both cameras and both in the ramp's own terms:
+
+| Column | Meaning |
+|---|---|
+| `frame`, `t`, `t_ns` | Which picture (matches `frames.parquet` / `rear_frames.parquet`) |
+| `offset_m` | Camera's distance from the sidewalk's centre line; positive = right of centre, facing forwards |
+| `heading_rad` | Ramp's direction relative to the sidewalk; positive = turned clockwise seen from above |
+| `width_m` | Sidewalk width from this picture (only when both edges were found) |
+| `edges` | Edges found: 2, 1 (other side filled in from the usual width), or 0 (no result; the other columns are empty) |
+| `left_edge_m`, `right_edge_m` | Where each edge is beside the camera |
+| `edge_rms_px` | How well the edges fitted a straight line, in pixels |
+
+**How to tell if it worked:**
+
+- The sidewalk width should be the real width (measure it once) and nearly
+  the same in every picture. A wide spread means bad labels or a wrong pose.
+- When a run has both cameras, the last line compares them. They look at
+  different ground, so agreement within a few centimetres and a degree or two
+  is the two halves checking each other.
+- The red lines in the preview should lie on the sidewalk's edges.
+
+**Camera height and tilt.** For the front camera these are measured, by
+fitting a plane to the ground in the depth pictures (19.4 cm and about 1
+degree up, on the runs of 2026-11-11). A run with no usable depth can't do
+that, so give it the pose from one that can:
+
+```
+uv run sidewalk_geometry.py ~/ramp-export/2026-11-11_09-38-03 --pose ~/ramp-export/2026-11-11_16-58-31/camera_pose.json
+```
+
+The rear camera has no depth and no calibration. Its tilt is worked out from
+where the sidewalk's edges meet in its pictures, its height is assumed equal
+to the front camera's unless you pass `--rear-height` (metres, measured to
+the middle of the lens), and its focal length is assumed (`--rear-fx`). The
+offset depends only on the height; a wrong focal length only skews the
+heading. `--height` overrides the front camera's measured height, and
+`--width` sets the sidewalk width instead of measuring it.
+
+**Limits to know about:** the sidewalk is treated as straight and the ground
+as flat, edges farther than 4 m ahead are ignored, and pictures where the
+sidewalk meets a driveway or another path usually give no result
+(`edges` = 0) rather than a wrong one.
+
