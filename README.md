@@ -52,3 +52,5 @@ Right now I'm in the very first stages of building a platform that can navigate 
 
 For this I've built a camera.py that records data into `.rrd` rerun files. I plan to run inference and test if we can't keep the ramp in place.
 
+To train from the recordings, `export_run.py` turns a run into a folder of pictures and tables, and `extract_telemetry.py` summarises what each run holds. Both are described in [`SETUP.md`](SETUP.md#10-exporting-runs-for-training).
+

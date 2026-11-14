@@ -84,8 +84,11 @@ OpenCV and falls through to the system `pyrealsense2`:
 
 ```
 uv venv --python /usr/bin/python3 --system-site-packages .venv
-uv pip install --python .venv/bin/python "rerun-sdk==0.43.0" opencv-python-headless
+uv pip install --python .venv/bin/python "rerun-sdk==0.43.0" opencv-python-headless pandas
 ```
+
+`pandas` is there for `export_run.py` (section 10): the system pandas does not
+load with numpy 2 either, and pyarrow fails on it when writing tables.
 
 Keep the Rerun version the same on any machine that opens the recordings.
 
@@ -225,3 +228,119 @@ To look at one:
   the list. Then open the URL it prints. Chrome works best.
 - **On another machine:** copy the file over, then
   `pip install rerun-sdk==0.43.0 && rerun FILE.rrd`. Better for long runs.
+
+## 10. Exporting runs for training
+
+A `.rrd` is good for looking at a run, but awkward to train from. Two scripts
+turn runs into plain files. Both run on the Jetson from the camera's venv, and
+take run names the same way `view_run.sh` does (a bare name means a file in
+`~/ramp-runs`).
+
+**Check what a run holds** (a few seconds per run; it skips the pictures):
+
+```
+.venv/bin/python extract_telemetry.py                  # every run
+.venv/bin/python extract_telemetry.py 2026-11-11_16-58-31
+```
+
+For each run it prints how long it drove forwards and backwards, how many
+steering taps it holds, and how often the controller dropped out. Runs with
+no driving or no steering are not worth exporting.
+
+**Export:**
+
+```
+.venv/bin/python export_run.py 2026-11-11_16-58-31 2026-11-11_09-38-03
+.venv/bin/python export_run.py --all                   # everything in ~/ramp-runs
+```
+
+Each run becomes a folder in `~/ramp-export` (`-o DIR` to write elsewhere),
+about the size of its `.rrd`, at roughly 10 seconds per minute of recording.
+`--skip ir depth` leaves those pictures out. A run that is already exported
+is left alone unless you pass `--force`. A folder ending in `.partial` is an
+export that was interrupted; it is replaced on the next try.
+
+The export ends with a warning if the depth pictures are mostly empty or the
+infrared is blown out, which is what happens when the RealSense's exposure was
+locked wrong for the light. The colour and rear pictures of such a run are
+still usable.
+
+**Copy to the training machine**, for example:
+
+```
+rsync -a --info=progress2 ~/ramp-export/ <training-machine>:ramp-export/
+```
+
+### What is in an export
+
+```
+2026-11-11_16-58-31/
+  color/000000.jpg ...     front colour, 640x480
+  ir/000000.jpg ...        front left infrared, 640x480, greyscale
+  depth/000000.png ...     front depth, 16-bit; value x depth_unit_m (in meta.json) = metres, 0 = no reading
+  rear/000000.jpg ...      rear camera, 640x480
+  frames.parquet           one row per front frame: the table to train from
+  rear_frames.parquet      frame, t, file for every rear picture
+  control.parquet          the control loop's state at 50 Hz, as recorded
+  imu_gyro.parquet         raw gyro (rad/s), about 200 Hz
+  imu_accel.parquet        raw accelerometer (m/s2), about 250 Hz
+  calibration.json         the front camera's intrinsics and depth-to-colour transform
+  events.json              state changes, faults, and the exposure each camera was locked at
+  meta.json                counts, frame rate, motor order, and the picture health check
+```
+
+The pictures are the recorded bytes, not re-encoded. Colour, infrared and
+depth share a frame number: `color/000123.jpg`, `ir/000123.jpg` and
+`depth/000123.png` were taken together. The rear camera has its own clock and
+its own numbering.
+
+Every table has `t` (seconds since the epoch) and `t_ns` (the same in
+nanoseconds, exact), on one clock across all of them.
+
+`frames.parquet` columns:
+
+| Column | Meaning |
+|---|---|
+| `frame`, `t`, `t_ns` | Front frame number and time |
+| `color`, `depth`, `ir` | Picture paths, relative to the run folder |
+| `rear`, `rear_dt` | The rear picture nearest in time, and how far off it is in seconds (under 0.035) |
+| `state` | `READY`, `ARMED`, `REARM` or `FAULT`. Only `ARMED` rows can move the ramp |
+| `r1`, `stick`, `speed` | Deadman held (0/1), stick position (-1..1), speed scale |
+| `steer` | Steering command: -1 left, 0 none, +1 right |
+| `jack` | Jack command: -1 down, 0 none, +1 up |
+| `erpm_cmd_back`, `erpm_cmd_front` | Speed sent to each VESC (positive = forwards) |
+| `vesc_<field>_<motor>` | VESC replies: `erpm`, `current_motor`, `current_in`, `v_in`, `duty`, `tach`, `temp_fet` |
+| `teensy_steer`, `teensy_jack` | What the Teensy says it is doing; trails the command by a tick or two |
+| `control_age` | How old the control values on this row are, in seconds (under 0.025) |
+| `gyro_x/y/z`, `accel_x/y/z` | IMU averaged over the frame interval ending at `t` |
+
+The control values on a row are the most recent ones at or before the frame,
+never later ones. The first frame or two of a run can come before the first
+control message, and those rows are empty. `control.parquet` has the same
+control columns at the full 50 Hz, with empty VESC values on the rare tick
+where no fresh reply had arrived.
+
+The IMU is in the RealSense's own axes: x to the right, y down, z forwards. So
+`gyro_y` is the turning rate, positive when turning right, and `accel_z` is
+forward acceleration. The accelerometer is uncalibrated (gravity reads about
+9.33).
+
+### Reading an export
+
+Reading needs only `pandas`, `pyarrow` and something to open pictures, not
+Rerun:
+
+```python
+import cv2, pandas as pd
+
+run = "ramp-export/2026-11-11_16-58-31"
+frames = pd.read_parquet(f"{run}/frames.parquet")
+driving = frames[(frames.state == "ARMED") & (frames.erpm_cmd_back.abs() > 200)]
+row = driving.iloc[0]
+color = cv2.imread(f"{run}/{row.color}")
+depth_m = cv2.imread(f"{run}/{row.depth}", cv2.IMREAD_UNCHANGED) * 0.001    # depth_unit_m from meta.json
+```
+
+To run the export scripts themselves on another machine (from copied `.rrd`
+files), it needs `rerun-sdk==0.43.0`, `pandas` and `opencv-python-headless`.
+
