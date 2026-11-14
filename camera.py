@@ -587,6 +587,59 @@ def lock_infrared(sensor, frame):
     recorder.note(f"front infrared/depth exposure locked: {exposure / 1000:g} ms, gain {gain}")
     return True
 
+class InfraredLockCheck:
+    """
+    Makes sure the infrared picture looks the same after its exposure is locked as before.
+    In bright sun auto-exposure settles on a very short exposure (0.02 - 0.04 ms), and the same
+    number written back as a manual exposure has given a pure white picture and no depth for the
+    whole recording. So: compare the picture's brightness a few frames after the lock with what
+    it was; while it is much brighter, shorten the manual exposure; and if even the shortest
+    exposure is too bright, give the camera back its auto-exposure for this recording.
+    """
+    WAIT = 6                         # frames for a change of exposure to show
+
+    def __init__(self, sensor):
+        self.sensor = sensor
+        self.wanted = None           # brightness before the lock; None = nothing to check
+        self.gave_up = False         # this recording stays on auto-exposure
+
+    def locked(self, before):
+        """Call when lock_infrared has succeeded, with the picture it locked on."""
+        try:                         # reading options can fail with a USB error, like setting them
+            self.exposure = self.sensor.get_option(rs.option.exposure)
+            self.e_min = self.sensor.get_option_range(rs.option.exposure).min
+        except RuntimeError:
+            return                   # can't check this time
+        self.wanted, self.left, self.changed = float(before.mean()), self.WAIT, False
+
+    def released(self):
+        self.wanted, self.gave_up = None, False
+
+    def frame(self, ir):
+        """Call with every infrared picture while locked. Returns False if the lock was given up."""
+        if self.wanted is None:
+            return True
+        self.left -= 1
+        if self.left > 0:
+            return True
+        now = float(ir.mean())
+        if now <= self.wanted * 1.4 + 10:
+            if self.changed:
+                recorder.note(f"front infrared/depth exposure lock corrected to {self.exposure / 1000:g} ms "
+                              f"(brightness {now:.0f}, was {self.wanted:.0f} before the lock)")
+            self.wanted = None
+            return True
+        if self.exposure > self.e_min:
+            self.exposure = max(self.e_min, self.exposure // (4 if now > 240 else 2))
+            if set_option(self.sensor, rs.option.exposure, self.exposure):
+                self.left, self.changed = self.WAIT, True
+                return True
+        set_option(self.sensor, rs.option.enable_auto_exposure, 1)
+        recorder.note(f"front infrared/depth exposure lock failed (brightness {now:.0f}, was {self.wanted:.0f} before the lock): left on auto")
+        print("front infrared/depth: the locked exposure came out too bright - left on auto for this recording", flush=True)
+        self.wanted, self.gave_up = None, True
+        return False
+
 def read_calibration(profile):
     def intrinsics(stream):
         k = profile.get_stream(stream).as_video_stream_profile().get_intrinsics()
@@ -618,7 +671,7 @@ def capture():
     # Gain no lower than 64 (the camera's default): below that the colour sensor clips short of white
     # (at gain 0 a fully blown-out picture reads as flat grey, 118), which looks correctly exposed to AutoExposure.
     ae = AutoExposure("front colour", apply, *start, (1, 10000), (64, 128))
-    ir_locked = False
+    ir_locked, ir_check = False, InfraredLockCheck(stereo)
     print("front camera:", dev.get_info(rs.camera_info.name), dev.get_info(rs.camera_info.serial_number))
     recorder.calibration = read_calibration(profile)
     motion = start_imu(dev) if USE_IMU else None
@@ -641,12 +694,19 @@ def capture():
             img = np.asanyarray(color_f.get_data())
             ir = np.asanyarray(ir_f.get_data()) if ir_f else None
             ae.update(img)
-            if exposure_locked.is_set() != ir_locked and ir_f:      # if this fails it is tried again on the next frame
+            if not exposure_locked.is_set() and ir_check.gave_up:
+                ir_check.released()
+            if exposure_locked.is_set() != ir_locked and ir_f and not ir_check.gave_up:   # if this fails it is tried again on the next frame
                 if not ir_locked:
                     ir_locked = lock_infrared(stereo, ir_f)
+                    if ir_locked:
+                        ir_check.locked(ir)
                 elif set_option(stereo, rs.option.enable_auto_exposure, 1):
                     ir_locked = False
+                    ir_check.released()
                     print("front infrared/depth exposure unlocked", flush=True)
+            elif ir_locked and ir is not None and not ir_check.frame(ir):
+                ir_locked = False
             recorder.frame(frame_time(color_f), img, np.asanyarray(depth_f.get_data()) if depth_f else None, ir)
             now = time.monotonic()
             if now - last_out < period:
