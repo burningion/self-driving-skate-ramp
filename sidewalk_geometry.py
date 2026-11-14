@@ -33,7 +33,8 @@ How it works: follow the sidewalk up the picture from the bottom row, fit a
 straight line to each edge, and put those lines on the ground using the
 camera's height and tilt. The front camera's height and tilt come from fitting
 a plane to its depth pictures. The rear camera has no depth, so its tilt comes
-from where the two edges meet in the picture (the horizon).
+from where the two edges meet in the picture (the horizon), and its height
+from making the sidewalk as wide as the front camera measured it.
 """
 import argparse
 import glob
@@ -199,14 +200,15 @@ def find_edges(paved, top_row):
             pts["r"].append((v, hi))
     out = {}
     for side, p in pts.items():
-        fit = None
+        fit, why = None, "out of view" if not p else "too short"
         if len(p) >= MIN_EDGE_ROWS and p[0][0] - p[-1][0] >= MIN_EDGE_SPAN:
             p = np.array(p, float)
-            fit = fit_line(p[:, 0], p[:, 1])
+            fit, why = fit_line(p[:, 0], p[:, 1]), "not straight"
             if fit and fit[2] > MAX_EDGE_RMS_PX:
                 fit = None
             if fit:
-                fit = fit + (float(p[:, 0].min()), float(p[:, 0].max()))
+                fit, why = fit + (float(p[:, 0].min()), float(p[:, 0].max())), ""
+        out[f"{side}_why"] = why
         for name, val in zip(("a", "b", "rms", "n", "v_far", "v_near"), fit or [np.nan] * 6):
             out[f"{side}_{name}"] = val
     return out
@@ -227,6 +229,7 @@ def edge_lines(run_dir, cam, paved, top_row):
 # ---------- edges on the ground ----------
 
 def to_geometry(lines, ground, rear, known_width=None):
+    # returns (table, the width used, the width these pictures themselves show, how many pictures show both edges)
     """Put each picture's edge lines on the ground and work out offset, heading and width."""
     g = lines[["frame", "paved_frac"]].copy()
     side = {}
@@ -244,7 +247,8 @@ def to_geometry(lines, ground, rear, known_width=None):
     both = has_l & has_r
     cos = lambda s: 1 / np.sqrt(1 + s ** 2)
     width = np.where(both, (xr - xl) * cos((sl + sr) / 2), np.nan)
-    usual = known_width or (np.nanmedian(width) if both.any() else np.nan)
+    own, n_both = (float(np.nanmedian(width)) if both.any() else np.nan), int(both.sum())
+    usual = known_width or own
     both &= np.abs(width - usual) < WIDTH_TOLERANCE * usual        # two edges that aren't a sidewalk apart: not this sidewalk
     slope = np.where(both, (sl + sr) / 2, np.where(has_l, sl, sr))
     half = usual / 2 / cos(slope)
@@ -257,7 +261,11 @@ def to_geometry(lines, ground, rear, known_width=None):
     g["width_m"] = np.where(both, width, np.nan)
     g["left_edge_m"], g["right_edge_m"] = (-xr, -xl) if rear else (xl, xr)
     g["edge_rms_px"] = np.fmax(lines.l_rms.to_numpy(), lines.r_rms.to_numpy())
-    return g, usual
+    lw, rw = lines.l_why.to_numpy(), lines.r_why.to_numpy()
+    worst = np.where((lw == "not straight") | (rw == "not straight"), "an edge isn't straight",
+                     np.where((lw == "too short") | (rw == "too short"), "too little edge in view", "no edge in view"))
+    g["why"] = np.where(edges > 0, "", np.where(has_l | has_r, "edges not a sidewalk's width apart", worst))
+    return g, usual, own, n_both
 
 
 def preview(run_dir, cam, lines, geom, ground, paved, path, n=12):
@@ -294,9 +302,12 @@ def report(cam, g, usual):
           f"no result {(g.edges == 0).mean() * 100:.0f}%")
     if len(ok):
         w = g.width_m.dropna()
-        print(f"      sidewalk width {usual:.2f} m (middle half of pictures within {w.quantile(.25):.2f}-{w.quantile(.75):.2f})   "
+        spread = f" (middle half of pictures within {w.quantile(.25):.2f}-{w.quantile(.75):.2f})" if len(w) else ""
+        print(f"      sidewalk width {usual:.2f} m{spread}   "
               f"offset {ok.offset_m.quantile(.05) * 100:+.0f}..{ok.offset_m.quantile(.95) * 100:+.0f} cm   "
               f"heading {np.degrees(ok.heading_rad.quantile(.05)):+.1f}..{np.degrees(ok.heading_rad.quantile(.95)):+.1f} deg")
+    if (g.edges == 0).any():
+        print("      no result because: " + ", ".join(f"{why} {n / len(g) * 100:.0f}%" for why, n in g.why[g.edges == 0].value_counts().items()))
 
 
 def process(run_dir, args):
@@ -314,7 +325,7 @@ def process(run_dir, args):
     pose_file = args.pose or os.path.join(run_dir, "camera_pose.json")
     pose = json.load(open(pose_file)) if os.path.isfile(pose_file) else {}
     print(f"{name}:")
-    geoms = {}
+    geoms, front_width = {}, None
     for cam, out_name in (("color", "geometry.parquet"), ("rear", "geometry_rear.parquet")):
         if not glob.glob(os.path.join(run_dir, "labels", cam, "*.png")):
             continue
@@ -345,12 +356,26 @@ def process(run_dir, args):
         if cam == "color" and args.height:
             p = {**p, "height_m": args.height, "source": p["source"].split("; height")[0] + "; height as given"}
         if cam == "rear" and args.rear_height:
-            p = {**p, "height_m": args.rear_height}
+            p = {**p, "height_m": args.rear_height, "height_from": "given"}
         pose[key] = p
         ground = Ground(**p)
         print(f"  {key} camera: {describe(p)}")
         lines = edge_lines(run_dir, cam, paved, ground.top_row())       # again, now knowing where the horizon is
-        g, usual = to_geometry(lines, ground, rear=cam == "rear", known_width=args.width)
+        # It is one sidewalk: the rear camera uses the width the front camera measured, which is the better measurement.
+        width = args.width or (front_width if cam == "rear" else None)
+        g, usual, own, n_both = to_geometry(lines, ground, rear=cam == "rear", known_width=width)
+        if cam == "rear" and width and n_both >= 20 and p.get("height_from") != "given" and abs(own / width - 1) > 0.02:
+            # Everything on the ground scales with the camera's height, so the height that makes the
+            # sidewalk as wide here as the front camera sees it is the rear camera's real height.
+            p["height_m"] *= width / own
+            p["height_from"] = "width"
+            p["source"] = p["source"].split(", height")[0] + f", height set so the sidewalk comes out {width:.2f} m wide like in the front camera"
+            ground = Ground(**p)
+            print(f"  {key} camera, corrected: {describe(p)}")
+            lines = edge_lines(run_dir, cam, paved, ground.top_row())
+            g, usual, own, n_both = to_geometry(lines, ground, rear=True, known_width=width)
+        if cam == "color":
+            front_width = usual if np.isfinite(usual) else None
         times = os.path.join(run_dir, "frames.parquet" if cam == "color" else "rear_frames.parquet")
         if os.path.isfile(times):
             g = g.merge(pd.read_parquet(times, columns=["frame", "t_ns", "t"]), on="frame", how="left")

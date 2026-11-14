@@ -401,6 +401,7 @@ Columns, the same for both cameras and both in the ramp's own terms:
 | `edges` | Edges found: 2, 1 (other side filled in from the usual width), or 0 (no result; the other columns are empty) |
 | `left_edge_m`, `right_edge_m` | Where each edge is beside the camera |
 | `edge_rms_px` | How well the edges fitted a straight line, in pixels |
+| `why` | For pictures with no result, the reason (also totalled in what the script prints) |
 
 **How to tell if it worked:**
 
@@ -421,11 +422,14 @@ uv run sidewalk_geometry.py ~/ramp-export/2026-11-11_09-38-03 --pose ~/ramp-expo
 ```
 
 The rear camera has no depth and no calibration. Its tilt is worked out from
-where the sidewalk's edges meet in its pictures, its height is assumed equal
-to the front camera's unless you pass `--rear-height` (metres, measured to
-the middle of the lens), and its focal length is assumed (`--rear-fx`). The
-offset depends only on the height; a wrong focal length only skews the
-heading. `--height` overrides the front camera's measured height, and
+where the sidewalk's edges meet in its pictures, and its focal length is
+assumed (`--rear-fx`). Its height is set so that the sidewalk comes out as
+wide as the front camera measured it, since both look at the same sidewalk;
+that needs at least 20 rear pictures showing both edges, and otherwise the
+front camera's height is used. `--rear-height` (metres, to the middle of the
+lens) overrides this. The offset depends only on the height; a wrong focal
+length only skews the heading. The rear camera also uses the front camera's
+sidewalk width to fill in the side it can't see. `--height` overrides the front camera's measured height, and
 `--width` sets the sidewalk width instead of measuring it.
 
 **Limits to know about:** the sidewalk is treated as straight and the ground
