@@ -62,6 +62,9 @@ class Params:
     gate: float = 4.0                   # vision further than this many sd from the estimate is thrown out...
     gate_agree: int = 3                 # ...unless this many pictures in a row say the same thing
     max_offset: float = 1.0             # m; vision claiming more than this is never believed
+    blind_s: float = 8.0                # this long without a usable picture and the estimate is no longer trusted:
+                                        # steer straight until gate_agree pictures in a row agree again.
+                                        # (Crossing a driveway is about 5 s with no edges in view.)
 
     def to_json(self):
         return asdict(self)
@@ -80,6 +83,7 @@ class Estimator:
         self._tap = 0.0                 # how long the current tap has lasted
         self._thrown = []               # the pictures thrown out in a row, while they agree with each other
         self._t_vision = 0.0            # time since the last vision update that was used
+        self.sure = False               # the offset and heading are backed by pictures that agreed with each other
         self.last = {}                  # last innovations, for looking at afterwards
 
     def predict(self, dt, erpm, steer):
@@ -98,6 +102,8 @@ class Estimator:
         q[2] += (p.tap_rate_error * p.steer_rate) ** 2 * 0.15 * dt * abs(steer)    # about right after a usual 0.15 s tap
         self.P = F @ self.P @ F.T + np.diag(q)
         self._t_vision += dt
+        if self._t_vision > p.blind_s:
+            self.sure = False
         for z in self._thrown:          # carry the thrown-out pictures along with the ramp's own motion
             z[0] += v * (z[1] + self.x[2]) * dt
             z[1] += v * self.x[2] / p.wheelbase_m * dt
@@ -136,7 +142,7 @@ class Estimator:
         S = H @ self.P @ H.T + R
         far = float(d @ np.linalg.inv(S) @ d) > p.gate ** 2
         self.last["vision"] = (float(d[0]), float(d[1]), far)
-        if far:
+        if far or not self.sure:        # not sure: one picture alone is never taken at its word
             if self._thrown and (abs(z[0] - self._thrown[-1][0]) > 0.10 or abs(z[1] - self._thrown[-1][1]) > 4 * DEG):
                 self._thrown = []       # it does not even agree with the last one thrown out
             self._thrown.append(z.copy())
@@ -144,6 +150,7 @@ class Estimator:
                 return False
             # vision has insisted, consistently: it is the estimate that is lost
             self.P[:2, :2] += np.diag([0.5 ** 2, (20 * DEG) ** 2])
+            self.sure = True
         self._thrown = []
         self._t_vision = 0.0
         self._update(z, H, R)
@@ -176,11 +183,15 @@ class Controller:
         aim = np.clip(-lead / (2 * p.damping * p.settle_m), -p.max_heading, p.max_heading)
         return float(np.clip(-L * k_heading * (along - aim), -p.max_steer, p.max_steer))
 
+    def aim(self, est):
+        """The steer angle to go for now: towards the centre line, or straight ahead while the estimate isn't sure."""
+        return self.target(est.x, est.v) if est.sure else 0.0
+
     def want(self, est):
         """-1, 0 or +1: which way the steer angle is off by more than the deadband (no tap timing)."""
         if abs(est.v) < self.p.min_speed:
             return 0
-        err = self.target(est.x, est.v) - est.x[2]
+        err = self.aim(est) - est.x[2]
         return int(np.sign(err)) if abs(err) > self.p.deadband else 0
 
     def step(self, est, dt):
@@ -189,7 +200,7 @@ class Controller:
         if abs(est.v) < p.min_speed:
             new = 0
         else:
-            err = self.target(est.x, est.v) - est.x[2]
+            err = self.aim(est) - est.x[2]
             if self.out == 0:
                 new = int(np.sign(err)) if abs(err) > p.deadband and self._since >= p.min_pause_s else 0
                 # the length is set at the start from the known actuator speed, not by watching the

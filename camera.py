@@ -17,6 +17,7 @@ import cv2, numpy as np, pyrealsense2 as rs
 import rerun as rr
 import rerun.blueprint as rrb
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from sidewalk_live import Autosteer
 
 # ---------- settings ----------
 W, H, CAM_FPS = 640, 480, 30   # capture mode (must be supported by the camera)
@@ -48,6 +49,9 @@ RUN_DIR    = os.path.expanduser("~/ramp-runs")
 REC_IDLE_S = 5.0               # close the recording this long after control_steering.py goes quiet
 REC_MIN_FREE_GB = 20           # don't start a recording with less disk than this (a run is roughly 35 GB per hour)
 REC_JPEG_Q = 90
+AUTOSTEER_DIR = os.path.expanduser("~/ramp-autosteer")   # the sidewalk network and what goes with it (see sidewalk_live.py)
+AUTOSTEER  = "shadow"          # at startup: "shadow" = work out the steering, show and record it, send nothing; or "off".
+                               # Switchable from the web page.
 
 # ---------- shared state ----------
 stop = threading.Event()
@@ -192,6 +196,11 @@ class Recorder(threading.Thread):
     def control(self, msg):
         self.q.put(("control", msg.get("t", time.time()), msg))
 
+    def auto(self, t, values):
+        """What the self-steering saw and would do (sidewalk_live.py), as autosteer/<name>."""
+        if self.rec is not None:
+            self.q.put(("auto", t, values))
+
     # ---- recorder thread ----
     def run(self):
         while not stop.is_set():
@@ -227,6 +236,9 @@ class Recorder(threading.Thread):
                     self.rec.log("camera/exposure", rr.TextLog(data))
                 elif kind == "control":
                     self._log_control(data)
+                elif kind == "auto":
+                    for name, value in data.items():
+                        self.rec.log(f"autosteer/{name}", rr.Scalars(float(value)))
                 else:
                     self.rec.log(f"imu/{kind}", rr.Scalars(data))
             except Exception as e:
@@ -271,6 +283,8 @@ class Recorder(threading.Thread):
                 rrb.Vertical(
                     rrb.TimeSeriesView(name="controller", contents=["control/r1", "control/stick", "control/steer", "control/jack"]),
                     rrb.TimeSeriesView(name="speed (ERPM)", contents=["control/erpm_cmd", "vesc/erpm"]),
+                    rrb.TimeSeriesView(name="autosteer: offset (m, + right)", contents=["autosteer/offset", "autosteer/seen_offset"]),
+                    rrb.TimeSeriesView(name="autosteer: taps it wants (+ right)", contents=["autosteer/want", "control/steer"]),
                     rrb.TimeSeriesView(name="motor current (A)", contents=["vesc/current_motor"]),
                     rrb.TimeSeriesView(name="gyro (rad/s)", contents=["imu/gyro"]),
                     rrb.TimeSeriesView(name="accel (m/s2)", contents=["imu/accel"]),
@@ -329,6 +343,7 @@ class Recorder(threading.Thread):
             log("control/state", rr.TextLog(text, level="WARN" if state[0] == "FAULT" else "INFO"))
 
 recorder = Recorder()
+autosteer = Autosteer(AUTOSTEER_DIR, AUTOSTEER, say=lambda text: print(text, flush=True), log=recorder.auto, stop=stop)
 
 def exposure_state():
     """For the web page: "auto" (adjusting freely), "locked", or "adjusting" (a reset during a recording)."""
@@ -363,6 +378,10 @@ def listen_control():
         with control_lock:
             control["msg"], control["at"] = msg, time.monotonic()
         recorder.control(msg)
+        try:
+            autosteer.control(msg)
+        except Exception as e:
+            print("autosteer error:", repr(e), flush=True)
 
 def control_snapshot():
     with control_lock:
@@ -370,7 +389,7 @@ def control_snapshot():
     if msg is None or age > 1.0:
         msg = {"state": "OFFLINE", "faults": ["control_steering.py is not running"]}
     return dict(msg, recording=recorder.file, last_recording=recorder.last_file, rec_paused=recorder.paused,
-                view=live_view, exposure=exposure_state())
+                view=live_view, exposure=exposure_state(), autosteer=autosteer.status())
 
 # ---------- IMU (opened directly on the motion sensor) ----------
 def on_motion(fr):
@@ -387,6 +406,7 @@ def on_motion(fr):
                 imu["pitch"] = math.degrees(math.atan2(az, math.hypot(ax, ay)))
             else:
                 imu["gyro"] = [math.degrees(x) for x in v]
+                autosteer.gyro(d.y)
         bump("imu")
     except Exception as e:
         print("imu callback error:", e)
@@ -708,12 +728,18 @@ def capture():
             elif ir_locked and ir is not None and not ir_check.frame(ir):
                 ir_locked = False
             recorder.frame(frame_time(color_f), img, np.asanyarray(depth_f.get_data()) if depth_f else None, ir)
+            autosteer.picture(frame_time(color_f), img)
             now = time.monotonic()
             if now - last_out < period:
                 continue
             last_out = now
             if live_view == "ir" and ir is not None:
                 img = cv2.cvtColor(ir, cv2.COLOR_GRAY2BGR)
+            else:
+                seen = autosteer.mask       # what the self-steering takes for sidewalk, in green
+                if seen is not None and seen.shape == img.shape[:2]:
+                    img = img.copy()
+                    img[seen] = img[seen] * 0.6 + np.array([0, 100, 0])
             if REAR_CAM is not None:
                 back = rear_frame()
                 have_rear = back is not None
@@ -780,11 +806,15 @@ html,body{margin:0;height:100%;background:#111;color:#eee;font:14px ui-monospace
 #view button.on{background:#8cf;color:#111;font-weight:bold}
 #exp,#rec{position:fixed;top:78px;right:10px;z-index:2;font:inherit;padding:8px 14px;border:0;border-radius:8px;background:#8cf;color:#111;font-weight:bold;cursor:pointer}
 #rec{top:134px}
+#auto{position:fixed;top:190px;right:10px;z-index:2;display:flex;border-radius:8px;overflow:hidden}
+#auto button{font:inherit;padding:8px 14px;border:0;background:rgba(0,0,0,.6);color:#aaa;cursor:pointer}
+#auto button.on{background:#8cf;color:#111;font-weight:bold}
+#auto button:disabled{cursor:default}
 #rec.stop{background:#f55}
 #exp:disabled,#rec:disabled{background:rgba(0,0,0,.6);color:#aaa;font-weight:normal;cursor:default}
 #exp small,#rec small{display:block;font-weight:normal;font-size:11px}
 </style></head><body>
-<div id="mode"></div><div id="view"><button data-v="ir">front IR</button><button data-v="color">front color</button></div><button id="exp" disabled>reset exposure<small></small></button><button id="rec" disabled>stop recording<small></small></button><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
+<div id="mode"></div><div id="view"><button data-v="ir">front IR</button><button data-v="color">front color</button></div><button id="exp" disabled>reset exposure<small></small></button><button id="rec" disabled>stop recording<small></small></button><div id="auto"><button data-m="off">autosteer off</button><button data-m="shadow">shadow</button></div><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
 <script>
 const mjpeg = new URLSearchParams(location.search).has('mjpeg');
 let v;
@@ -853,6 +883,13 @@ rb.onclick=async()=>{
   rb.disabled=true; rb.lastChild.textContent=recOn?'stopping...':'starting...'; recAt=Date.now();
   try{ await fetch('/record?on='+(recOn?0:1),{method:'POST'}); }catch(err){}
 };
+const ab=document.getElementById('auto'); let autoAt=0;
+function showAuto(a){ for(const b of ab.children){ b.className=a.available&&b.dataset.m===a.mode?'on':''; b.disabled=!a.available; } }
+ab.onclick=async e=>{
+  const m=e.target.dataset.m; if(!m||e.target.disabled) return;
+  showAuto({available:true,mode:m}); autoAt=Date.now();
+  try{ await fetch('/autosteer?mode='+m,{method:'POST'}); }catch(err){}
+};
 async function pollState(){
   let d;
   try{ d=await (await fetch('/state')).json(); }catch(e){ d={state:'OFFLINE',faults:['no connection']}; }
@@ -860,12 +897,14 @@ async function pollState(){
   if(d.exposure && Date.now()-expAt>1000) showExp(d.exposure);
   st.style.color=colors[d.state]||'#eee';
   if(Date.now()-recAt>1000) showRec(d);
+  if(d.autosteer && Date.now()-autoAt>1000) showAuto(d.autosteer);
   st.textContent=d.state+(d.recording?'  \\u25cf REC':'');
   const lines=[...(d.faults||[])];
   if(d.recording) lines.unshift(d.recording);
   else if(d.last_recording) lines.push('saved '+d.last_recording);
   if(d.state==='REARM') lines.push('release R1');
   for(const [m,v] of Object.entries(d.vesc||{})) if(v) lines.push(`${m} ${v.erpm} erpm  ${v.v_in.toFixed(1)} V  ${v.current_in.toFixed(1)} A`);
+  if(d.autosteer && d.autosteer.text && d.autosteer.mode!=='off') lines.push('', ...d.autosteer.text.split('\\n'));
   if(lines.length){ const s=document.createElement('small'); s.textContent='\\n'+lines.join('\\n'); st.append(s); }
   setTimeout(pollState,250);
 }
@@ -902,6 +941,9 @@ class Handler(BaseHTTPRequestHandler):
             recorder.paused = query == "on=0"
             print(f"recording {'stopped' if recorder.paused else 'started'} from the web page ({self.client_address[0]})", flush=True)
             return self._send(200, "application/json", json.dumps({"rec_paused": recorder.paused}).encode())
+        if path == "/autosteer" and query.startswith("mode=") and autosteer.set_mode(query[5:]):
+            print(f"autosteer -> {autosteer.mode} (from {self.client_address[0]})", flush=True)
+            return self._send(200, "application/json", json.dumps(autosteer.status()).encode())
         view = query[2:] if query.startswith("v=") else None
         if path != "/view" or view not in ("ir", "color"):
             return self._send(404, "text/plain", b"not found")
@@ -967,6 +1009,7 @@ def main():
     if back:
         back.start()
     recorder.start()
+    autosteer.start()
     threading.Thread(target=report, daemon=True).start()
     threading.Thread(target=listen_control, daemon=True).start()
     signal.signal(signal.SIGINT, shutdown)

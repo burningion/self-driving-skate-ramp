@@ -516,3 +516,30 @@ Then copy `sidewalk_net.onnx` to the Jetson and check it runs there, and how fas
 on. The pictures are varied as it learns (mirrored, tilted, tinted, shadowed),
 which helps with light and position, but not with a sidewalk that looks
 different. More runs in more places is what fixes that.
+
+## 14. Self-steering in shadow mode (on the ramp)
+
+`camera.py` runs the self-steering (`sidewalk_live.py`) beside the cameras. In shadow mode it
+works out where the ramp is on the sidewalk and which way it would tap the steering, shows
+that on the web page and writes it into the recording (`autosteer/...`). It sends nothing to
+the actuator.
+
+It reads three files from `~/ramp-autosteer/` on the ramp:
+
+```bash
+mkdir -p ~/ramp-autosteer
+cp ~/ramp-export/sidewalk_net/sidewalk_net.onnx ~/ramp-autosteer/     # from train_sidewalk.py
+cp ~/ramp-export/<a recent run>/camera_pose.json ~/ramp-autosteer/    # from sidewalk_geometry.py
+cp ~/ramp-export/steering_model.json ~/ramp-autosteer/                # from steering_replay.py
+systemctl --user restart skate-camera
+```
+
+The first start after a new `sidewalk_net.onnx` takes about five minutes while the network is
+converted for the Jetson's GPU; the web page says so until it is ready.
+
+On the web page, "autosteer off / shadow" switches it. With "front color" selected, what it
+takes for sidewalk is tinted green. To check the files against a recorded run:
+
+```bash
+.venv/bin/python sidewalk_live.py ~/ramp-autosteer ~/ramp-export/<run>
+```

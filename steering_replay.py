@@ -11,6 +11,8 @@ Try the self-steering (autosteer.py) on recorded runs, without the ramp.
         --save FILE      write the fitted model here (default: steering_model.json beside the runs)
         --sims N         simulated drives per starting position (default 4; 0 = skip the simulation)
         --set NAME=VALUE change a controller or estimator setting (see Params in autosteer.py)
+        --skip RUN:FROM-TO  leave out part of a run, in seconds from its start (a stretch off the
+                         sidewalk, say): --skip 2026-11-14_15-09-40:30-78
 
 RUN_DIR is a folder written by export_run.py, with geometry.parquet from
 sidewalk_geometry.py in it. Pictures are not needed, only the tables.
@@ -49,7 +51,7 @@ HALF_WIDTH = 0.60           # of the sidewalk, m
 # ---------- the recorded data ----------
 
 class Run:
-    def __init__(self, d):
+    def __init__(self, d, skip=()):
         self.dir = d = os.path.expanduser(d).rstrip("/")
         self.name = os.path.basename(d)
         c = pd.read_parquet(os.path.join(d, "control.parquet"))
@@ -77,6 +79,10 @@ class Run:
                                         "heading": v.heading_rad.values, "edges": v.edges.values})
             self.vision_all_t = pd.read_parquet(gp).t.values - self.t0
         self.moving = np.abs(self.erpm) > MOVING_ERPM
+        for a, b in skip:               # not driving on a sidewalk there: no pictures, and not counted as driving
+            self.moving[(self.t >= a) & (self.t < b)] = False
+            if self.vision is not None:
+                self.vision = self.vision[(self.vision.t < a) | (self.vision.t >= b)].reset_index(drop=True)
 
     def drives(self, min_s=3.0):
         """Index ranges of continuous driving."""
@@ -210,7 +216,7 @@ def replay(run, p, record=True):
             vi += 1
         out["offset"][i], out["heading"][i], out["steer"][i] = est.x
         out["sd_offset"][i] = np.sqrt(est.P[0, 0])
-        out["target"][i] = ctl.target(est.x, est.v) if abs(est.v) >= p.min_speed else np.nan
+        out["target"][i] = ctl.aim(est) if abs(est.v) >= p.min_speed else np.nan
         out["want"][i] = ctl.want(est)
     out["vision_miss"] = pd.DataFrame(vis_miss, columns=["row", "tick", "offset", "heading", "used", "edges"])
     return out
@@ -355,6 +361,11 @@ def simulate(p, bank, rng, offset0, heading0, direction, seconds=18.0, dt=0.02, 
     vseq = vis[rng.integers(len(vis))] if vis else np.zeros((1, 3))
     gseq = gyro[rng.integers(len(gyro))] if gyro else np.zeros(1)
     vk, gk = rng.integers(len(vseq)), rng.integers(len(gseq))
+    # set off where the camera can see the sidewalk (not in the middle of a driveway), as one would
+    seen = np.isfinite(np.r_[vseq[:, 0], vseq[:15, 0]])
+    good = [k for k in range(len(vseq)) if seen[k:k + 15].sum() >= 12]
+    if good:
+        vk = good[rng.integers(len(good))]
     est, ctl = Estimator(p), Controller(p)
     n = int(seconds / dt)
     log = np.zeros((n, 8))
@@ -447,9 +458,17 @@ def main():
     ap.add_argument("--save")
     ap.add_argument("--sims", type=int, default=4)
     ap.add_argument("--set", nargs="+", default=[], metavar="NAME=VALUE")
+    ap.add_argument("--skip", nargs="+", default=[], metavar="RUN:FROM-TO")
     args = ap.parse_args()
 
-    runs = [Run(d) for d in args.runs]
+    skip = {}
+    for s in args.skip:
+        name, _, span = s.rpartition(":")
+        a, _, b = span.partition("-")
+        skip.setdefault(name, []).append((float(a), float(b)))
+    runs = [Run(d, skip.pop(os.path.basename(d.rstrip("/")), ())) for d in args.runs]
+    if skip:
+        sys.exit(f"--skip names a run that isn't here: {', '.join(skip)}")
     p = Params()
     if args.model:
         with open(args.model) as f:
