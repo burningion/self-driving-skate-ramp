@@ -146,6 +146,15 @@ def export(path, out_root, skip=(), force=False):
             write_table(os.path.join(out, f"imu_{name}.parquet"),
                         {"t_ns": t, "t": t / 1e9, "x": v[:, 0], "y": v[:, 1], "z": v[:, 2]})
 
+    # what the self-steering saw and would have done (shadow mode), one row per picture it used
+    auto = {k.split("/")[-1]: v for k, v in run.scalars.items() if k.startswith("/autosteer/")}
+    if auto:
+        t = min((t for t, _ in auto.values()), key=len)
+        cols = {"t_ns": t, "t": t / 1e9}
+        for name, (tk, v) in sorted(auto.items()):
+            cols[name] = latest_at(tk, np.asarray(v).reshape(len(tk), -1)[:, 0], t)
+        write_table(os.path.join(out, "autosteer.parquet"), cols)
+
     # one row per front frame, with the rear picture nearest in time and the telemetry as of that frame
     def frame_rows(clock, own):
         cols = {"frame": np.arange(len(clock)), "t_ns": clock, "t": clock / 1e9}

@@ -51,7 +51,8 @@ REC_MIN_FREE_GB = 20           # don't start a recording with less disk than thi
 REC_JPEG_Q = 90
 AUTOSTEER_DIR = os.path.expanduser("~/ramp-autosteer")   # the sidewalk network and what goes with it (see sidewalk_live.py)
 AUTOSTEER  = "shadow"          # at startup: "shadow" = work out the steering, show and record it, send nothing; or "off".
-                               # Switchable from the web page.
+                               # Switchable from the web page, which can also turn it "on": then the taps go to
+                               # control_steering.py. It never starts "on".
 
 # ---------- shared state ----------
 stop = threading.Event()
@@ -324,7 +325,7 @@ class Recorder(threading.Thread):
     def _log_control(self, m):
         log = self.rec.log
         log("control/r1", rr.Scalars(float(m.get("r1", False))))
-        for key in ("stick", "steer", "jack", "speed"):
+        for key in ("stick", "steer", "jack", "speed", "auto"):
             log(f"control/{key}", rr.Scalars(float(m.get(key, 0))))
         cmd = m.get("erpm_cmd") or {}
         log("control/erpm_cmd", rr.Scalars([float(cmd.get(mo, 0)) for mo in self._motors]))
@@ -809,12 +810,13 @@ html,body{margin:0;height:100%;background:#111;color:#eee;font:14px ui-monospace
 #auto{position:fixed;top:190px;right:10px;z-index:2;display:flex;border-radius:8px;overflow:hidden}
 #auto button{font:inherit;padding:8px 14px;border:0;background:rgba(0,0,0,.6);color:#aaa;cursor:pointer}
 #auto button.on{background:#8cf;color:#111;font-weight:bold}
+#auto button.on[data-m=on]{background:#f55;color:#fff}
 #auto button:disabled{cursor:default}
 #rec.stop{background:#f55}
 #exp:disabled,#rec:disabled{background:rgba(0,0,0,.6);color:#aaa;font-weight:normal;cursor:default}
 #exp small,#rec small{display:block;font-weight:normal;font-size:11px}
 </style></head><body>
-<div id="mode"></div><div id="view"><button data-v="ir">front IR</button><button data-v="color">front color</button></div><button id="exp" disabled>reset exposure<small></small></button><button id="rec" disabled>stop recording<small></small></button><div id="auto"><button data-m="off">autosteer off</button><button data-m="shadow">shadow</button></div><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
+<div id="mode"></div><div id="view"><button data-v="ir">front IR</button><button data-v="color">front color</button></div><button id="exp" disabled>reset exposure<small></small></button><button id="rec" disabled>stop recording<small></small></button><div id="auto"><button data-m="off">autosteer off</button><button data-m="shadow">shadow</button><button data-m="on">ON</button></div><div id="hud">connecting...</div><div id="state"></div><canvas id="hz" width="140" height="140"></canvas>
 <script>
 const mjpeg = new URLSearchParams(location.search).has('mjpeg');
 let v;
@@ -887,6 +889,7 @@ const ab=document.getElementById('auto'); let autoAt=0;
 function showAuto(a){ for(const b of ab.children){ b.className=a.available&&b.dataset.m===a.mode?'on':''; b.disabled=!a.available; } }
 ab.onclick=async e=>{
   const m=e.target.dataset.m; if(!m||e.target.disabled) return;
+  if(m==='on' && !confirm('Autosteer ON: it will tap the steering whenever R1 is held and the ramp is driving. The D-pad overrides it; releasing R1 stops everything.')) return;
   showAuto({available:true,mode:m}); autoAt=Date.now();
   try{ await fetch('/autosteer?mode='+m,{method:'POST'}); }catch(err){}
 };

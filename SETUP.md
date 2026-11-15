@@ -537,9 +537,20 @@ systemctl --user restart skate-camera
 The first start after a new `sidewalk_net.onnx` takes about five minutes while the network is
 converted for the Jetson's GPU; the web page says so until it is ready.
 
-On the web page, "autosteer off / shadow" switches it. With "front color" selected, what it
+On the web page, "autosteer off / shadow / ON" switches it. With "front color" selected, what it
 takes for sidewalk is tinted green. To check the files against a recorded run:
 
 ```bash
 .venv/bin/python sidewalk_live.py ~/ramp-autosteer ~/ramp-export/<run>
 ```
+
+### Letting it steer
+
+"ON" on the web page sends its taps to `control_steering.py` (restart that after pulling, so it
+listens for them). The control loop uses a tap only while R1 is held and a motor is being driven,
+and never while the D-pad is steering: a tap from the driver wins, and keeps the self-steering
+out for a second after. Releasing R1 stops everything, as always. Speed is never touched.
+
+It goes back to "shadow" by itself when `control_steering.py` stops or `camera.py` restarts, so
+ON has to be pressed again each session. The status box says STEERING while its taps are in use.
+First tries: forwards, nobody on the ramp, started near the middle of a straight sidewalk.

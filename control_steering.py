@@ -53,6 +53,19 @@ non-zero timeout brake current, on BOTH VESCs).
 The loop also sends its full state as JSON over UDP to STATE_ADDR every tick,
 for the camera page and the run recorder.
 
+Self-steering
+-------------
+camera.py can steer (see sidewalk_live.py): when "autosteer" is switched on in
+its web page it sends a steering tap (-1, 0, +1) to AUTOSTEER_ADDR after every
+state message. The loop uses that tap only when ALL of these hold:
+  * ARMED (R1 held), and a motor is being driven;
+  * the D-pad is not steering: a tap from the driver always wins, and keeps
+    the self-steering out for AUTOSTEER_HOLDOFF_S after it is released;
+  * the newest message is younger than AUTOSTEER_STALE_S and says it is for
+    the state message this loop sent on its last tick or the one before;
+  * it has not been tapping the same way for longer than AUTOSTEER_MAX_TAP_S.
+Otherwise steering is the D-pad's, as always. Speed is never touched.
+
 Run:  uv run control_steering.py        (or ./control_steering.py after chmod +x)
 """
 
@@ -131,6 +144,11 @@ TELEMETRY_STALE_S = 0.5        # VESC / Teensy status older than this is a fault
 CONTROLLER_STALE_S = 0.3       # controller report stream silent this long = out of range
 
 STATE_ADDR = ("127.0.0.1", 47800)   # loop state goes here as JSON over UDP, every tick
+
+AUTOSTEER_ADDR = ("127.0.0.1", 47801)   # camera.py's steering taps arrive here (UDP JSON)
+AUTOSTEER_STALE_S = 0.15       # a tap older than this is not used
+AUTOSTEER_MAX_TAP_S = 0.6      # longest it may tap one way without a pause (it plans 0.4 s at most)
+AUTOSTEER_HOLDOFF_S = 1.0      # after the driver steers, the self-steering stays out this long
 
 # USB IDs used for autodetection
 STM32_VCP = (0x0483, 0x5740)   # most VESCs
@@ -749,6 +767,46 @@ def step_toward(current, target, max_delta):
     return max(target, current - max_delta)
 
 
+class AutosteerIn(threading.Thread):
+    """Receives camera.py's steering taps. tap(...) is what the loop may use this tick: -1, 0, +1, or None."""
+
+    def __init__(self):
+        super().__init__(daemon=True, name="autosteer")
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind(AUTOSTEER_ADDR)
+        self._lock = threading.Lock()
+        self._msg = (0, -1, -1e9)       # steer, the state message it answers, when it arrived
+        self._same = (0, 0.0)           # the direction being tapped, and since when
+        self._capped = False
+
+    def run(self):
+        while True:
+            try:
+                m = json.loads(self._sock.recv(4096))
+                steer, seq = m["steer"], m["seq"]
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if steer in (-1, 0, 1) and isinstance(seq, int):
+                with self._lock:
+                    self._msg = (steer, seq, time.monotonic())
+
+    def tap(self, seq):
+        """seq: the number of the state message sent on the last tick."""
+        now = time.monotonic()
+        with self._lock:
+            steer, answers, at = self._msg
+        if now - at > AUTOSTEER_STALE_S or not seq - 1 <= answers <= seq:
+            self._same, self._capped = (0, now), False
+            return None
+        if steer != self._same[0]:
+            self._same, self._capped = (steer, now), False
+        elif steer and now - self._same[1] > AUTOSTEER_MAX_TAP_S:
+            if not self._capped:
+                log.warning("self-steering tapped one way for over %.1f s: cut short", AUTOSTEER_MAX_TAP_S)
+            self._capped = True
+        return 0 if self._capped else steer
+
+
 class ControlLoop(threading.Thread):
     def __init__(self, inputs, vesc, teensy, can_ids, pad=None, checks=True, telemetry=False):
         """can_ids: {motor: None for the USB VESC, or its CAN id}. Motors not in it are skipped."""
@@ -770,6 +828,15 @@ class ControlLoop(threading.Thread):
         self._tick_n = 0
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setblocking(False)
+        self._seq = 0                # number of the last state message sent
+        self._auto_on = False        # the self-steering had the steering on the last tick
+        self._manual_at = -1e9       # when the driver last steered
+        try:
+            self.autosteer = AutosteerIn()
+            self.autosteer.start()
+        except OSError as e:
+            self.autosteer = None
+            log.warning("self-steering not available (%s)", e)
 
     def run(self):
         period = 1.0 / CONTROL_HZ
@@ -831,9 +898,17 @@ class ControlLoop(threading.Thread):
         elif self._ready and not self._armed and is_neutral(s):
             self._armed = True
 
+        auto = None
         if self._armed:
             state = "ARMED"
             targets, steer, jack = compute_targets(s)
+            now = time.monotonic()
+            if steer:
+                self._manual_at = now
+            tap = self.autosteer.tap(self._seq) if self.autosteer else None
+            if (tap is not None and now - self._manual_at > AUTOSTEER_HOLDOFF_S
+                    and any(targets.values())):
+                auto = steer = tap
         else:
             targets, steer, jack = {m: 0 for m in MOTORS}, 0, 0
             if faults:
@@ -859,6 +934,9 @@ class ControlLoop(threading.Thread):
                 self.commanded[m] = 0.0                    # stop now, no ramp
             self._send_motor(can_id, self.commanded[m])
 
+        if (auto is not None) != self._auto_on:
+            self._auto_on = auto is not None
+            log.info("steering: %s", "self-steering" if self._auto_on else "D-pad")
         self.teensy.send(steer, jack)
 
         # Ask one VESC per tick for its values (each gets polled at CONTROL_HZ / n).
@@ -866,16 +944,17 @@ class ControlLoop(threading.Thread):
         self.vesc.request_values(self.can_ids[motors[self._tick_n % len(motors)]])
         self._tick_n += 1
 
-        self._publish(state, faults, s, steer, jack)
+        self._publish(state, faults, s, steer, jack, auto is not None)
 
         if self.telemetry and time.monotonic() - self._last_telemetry > 1.0:
             self._last_telemetry = time.monotonic()
             self._print_telemetry()
 
-    def _publish(self, state, faults, s, steer, jack):
-        msg = {"t": time.time(), "state": state, "faults": faults,
+    def _publish(self, state, faults, s, steer, jack, auto):
+        self._seq += 1
+        msg = {"t": time.time(), "seq": self._seq, "state": state, "faults": faults,
                "r1": s.safety, "stick": s.stick, "held": s.held, "speed": s.speed,
-               "steer": steer, "jack": jack,
+               "steer": steer, "jack": jack, "auto": auto,     # auto: this tick's steer is the self-steering's
                "erpm_cmd": {m: self.commanded[m] for m in self.can_ids},
                "vesc": {m: self.values(m) for m in self.can_ids},
                "teensy": self.teensy.status}

@@ -5,7 +5,9 @@ GPU, through TensorRT) -> the sidewalk's edges -> where the ramp is on it
 
 camera.py runs one Autosteer and feeds it pictures, the gyro and the control loop's
 state. In "shadow" mode it only watches: what it would do is shown on the web page
-and written into the recording, and nothing is sent to the actuator.
+and written into the recording, and nothing is sent to the actuator. In "on" mode
+its taps are sent to control_steering.py, which decides whether to use them (R1 held,
+driving, the driver not steering: see the top of control_steering.py).
 
 It needs a folder (camera.py: AUTOSTEER_DIR) holding
     sidewalk_net.onnx       from train_sidewalk.py
@@ -20,11 +22,15 @@ Try it on an exported run, against what sidewalk_geometry.py found from the big 
 import ctypes
 import json
 import os
+import socket
+import struct
 import subprocess
 import sys
 import threading
 import time
 from collections import deque
+
+from multiprocessing.connection import Connection
 
 import numpy as np
 import pandas as pd
@@ -37,6 +43,8 @@ VISION_HZ = 10              # pictures looked at per second (the camera makes 30
 MIN_WIDTH_M, MAX_WIDTH_M = 0.7, 2.5     # two edges further apart or closer than this are not a sidewalk
 WIDTHS_KEPT, WIDTHS_NEEDED = 150, 15    # the usual width is the median of the last so many two-edge pictures
 CONTROL_GAP_S = 0.5         # the control loop silent for this long: start the estimate afresh
+TAP_ADDR = ("127.0.0.1", 47801)     # control_steering.py listens here for the taps (its AUTOSTEER_ADDR)
+PICTURES_STALE_S = 0.5      # no picture looked at for this long: send no taps (the driver steers)
 
 
 class Net:
@@ -137,15 +145,19 @@ def load(folder):
 class Autosteer(threading.Thread):
     """
     picture(), gyro() and control() are called from camera.py's threads as things arrive;
-    none of them waits. The network runs in this thread; the estimate advances in
-    control(), once per message from the control loop (50 a second).
+    none of them waits. The network and the edge finding run in a process of their own
+    (serve(), below), so that they never hold up the cameras or the recording; this
+    thread passes pictures to it. The estimate advances in control(), once per message
+    from the control loop (50 a second).
     """
 
     def __init__(self, folder, mode="shadow", say=print, log=None, stop=None):
         super().__init__(name="autosteer", daemon=True)
         self.folder, self.say, self.log = folder, say, log or (lambda t, values: None)
         self.stop = stop or threading.Event()
-        self.mode = mode                    # "off" or "shadow"
+        self.mode = mode if mode in ("off", "shadow") else "shadow"     # "off", "shadow" or "on"; never starts "on"
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._looked_at = -1e9              # when a picture was last looked at (with or without a result)
         self.problem = "starting"           # why it can't work, or None once it can
         self.mask = None                    # the newest mask, for drawing on the live view
         self._lock = threading.Lock()
@@ -162,7 +174,7 @@ class Autosteer(threading.Thread):
 
     # ---- called from camera.py ----
     def set_mode(self, mode):
-        if mode not in ("off", "shadow"):
+        if mode not in ("off", "shadow", "on"):
             return False
         with self._lock:
             self.mode = mode
@@ -197,6 +209,9 @@ class Autosteer(threading.Thread):
             seen, self._seen = self._seen, []
             (total, n), self._gyro = self._gyro, [0.0, 0]
             dt = t - self._last["t"]
+            if self.mode == "on" and self._last["t"] and dt > 5.0:
+                self.mode = "shadow"        # control_steering.py was restarted: ON has to be asked for again
+                self.say("autosteer -> shadow (control_steering.py had stopped)")
             if self._est is None or not 0 < dt < CONTROL_GAP_S:
                 self._est, self._ctl, dt = Estimator(p), Controller(p), 0.02
             est, ctl = self._est, self._ctl
@@ -205,11 +220,18 @@ class Autosteer(threading.Thread):
                 est.gyro(total / n)
             for z in seen:
                 z["used"] = est.vision(z["offset"], z["heading"], z["edges"])
-            ctl.step(est, dt)
+            tap = ctl.step(est, dt)
+            seeing = time.monotonic() - self._looked_at < PICTURES_STALE_S
+            if self.mode == "on" and seeing and self.problem is None and "seq" in msg:
+                try:
+                    self._sock.sendto(json.dumps({"steer": int(tap), "seq": msg["seq"]}).encode(), TAP_ADDR)
+                except OSError:
+                    pass
             self._last = {"t": t, "steer": int(msg.get("steer") or 0)}
             now = {"offset": float(est.x[0]), "heading": float(est.x[1]), "steer": float(est.x[2]),
                    "sure": bool(est.sure), "want": int(ctl.want(est)), "target": float(ctl.aim(est)),
-                   "speed": float(est.v), "blind_s": float(est.blind_s)}
+                   "speed": float(est.v), "blind_s": float(est.blind_s),
+                   "tap": int(tap), "steering": bool(msg.get("auto"))}
             self._view.update(now, at=time.monotonic())
         for z in seen:                      # into the recording, at the picture's own time
             self.log(z["t"], {"seen_edges": z["edges"], "seen_offset": z["offset"], "seen_heading": z["heading"],
@@ -218,6 +240,9 @@ class Autosteer(threading.Thread):
     def status(self):
         """For the web page."""
         with self._lock:
+            if self.mode == "on" and time.monotonic() - self._view.get("at", time.monotonic()) > 5.0:
+                self.mode = "shadow"        # control_steering.py has stopped: ON has to be asked for again
+                self.say("autosteer -> shadow (control_steering.py has stopped)")
             v, mode, problem = dict(self._view), self.mode, self.problem
         out = {"mode": mode, "available": problem is None}
         if problem:
@@ -233,55 +258,98 @@ class Autosteer(threading.Thread):
             if time.monotonic() - v.get("at", -1e9) > 1.0:
                 lines.append("estimate: waiting for control_steering.py")
             elif not v["sure"]:
-                lines.append("estimate: not sure where the sidewalk is; would steer straight")
+                lines.append("estimate: not sure where the sidewalk is; steers straight")
             else:
                 lines.append(f"estimate: {side(v['offset'] * 100, 'cm', 0)} of centre, pointing {side(v['heading'] / DEG, 'deg', 1)},"
                              f" steering {side(v['steer'] / DEG, 'deg', 1)}")
-            if time.monotonic() - v.get("at", -1e9) <= 1.0:
+            if mode == "on" and time.monotonic() - v.get("at", -1e9) <= 1.0:
+                lines.append("STEERING" if v["steering"] else "not steering now: hold R1 and drive, hands off the D-pad")
+            elif time.monotonic() - v.get("at", -1e9) <= 1.0:
                 lines.append("would tap: " + {-1: "◀ left", 0: "nothing", 1: "right ▶"}[v["want"]]
                              if abs(v["speed"]) >= self._p.min_speed else "would tap: nothing (not moving)")
             out["text"] = "\n".join(lines)
-            out.update({k: v[k] for k in ("offset", "heading", "steer", "sure", "want") if k in v})
+            out.update({k: v[k] for k in ("offset", "heading", "steer", "sure", "want", "steering") if k in v})
         return out
 
     # ---- this thread ----
     def run(self):
         try:
-            onnx, pose, self._p = load(self.folder)
-            net, geometry = Net(onnx, self.say), Geometry(pose)
+            load(self.folder)               # says what is missing, if anything
+            ours, theirs = socket.socketpair()
+            child = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--serve", self.folder, str(theirs.fileno())],
+                                     pass_fds=[theirs.fileno()])
+            theirs.close()
+            conn = Connection(ours.detach())
+            while not conn.poll(1.0):       # converting a new network takes minutes
+                if self.stop.is_set() or child.poll() is not None:
+                    raise RuntimeError("the sidewalk network's process ended")
+                self.problem = "starting (a new network takes about five minutes to prepare)"
+            kind, text = conn.recv()
+            if kind != "ready":
+                raise RuntimeError(text)
+            _, _, self._p = load(self.folder)
         except Exception as e:
             self.problem = str(e)
             self.say(f"autosteer not available: {e}")
             return
         self.problem = None
-        self.say(f"autosteer ready ({self.mode}): {onnx}")
+        self.say(f"autosteer ready ({self.mode}): {text}")
         times = deque(maxlen=20)
-        while not self.stop.is_set():
-            with self._new:
-                if self._picture is None:
-                    self._new.wait(0.5)
-                pic, self._picture = self._picture, None
-            if pic is None or self.mode == "off":
-                continue
-            t, bgr = pic
-            try:
-                mask = net.mask(bgr)
-                z = geometry.measure(mask)
-            except Exception as e:
-                self.problem = f"stopped: {e!r}"
-                self.say(f"autosteer stopped: {e!r}")
-                return
-            times.append(time.monotonic())
-            with self._lock:
-                if self.mode == "off":
+        try:
+            while not self.stop.is_set():
+                with self._new:
+                    if self._picture is None:
+                        self._new.wait(0.5)
+                    pic, self._picture = self._picture, None
+                if pic is None or self.mode == "off":
                     continue
-                self.mask = mask
-                if len(times) > 1:
-                    self._rate = (len(times) - 1) / (times[-1] - times[0])
-                self._view.update(seen_edges=z["edges"], seen_offset=z["offset"], seen_heading=z["heading"], seen_why=z["why"])
-                if z["edges"]:
-                    self._seen.append({"t": t, **z})
-                    del self._seen[:-5]     # control_steering.py not running: don't pile them up
+                t, bgr = pic
+                conn.send_bytes(struct.pack("<dHH", t, *bgr.shape[:2]) + bgr.tobytes())
+                if not conn.poll(3.0):
+                    raise RuntimeError("the sidewalk network stopped answering")
+                z, bits = conn.recv()
+                times.append(time.monotonic())
+                self._looked_at = times[-1]
+                with self._lock:
+                    if self.mode == "off":
+                        continue
+                    self.mask = np.unpackbits(np.frombuffer(bits, np.uint8))[:bgr.shape[0] * bgr.shape[1]].reshape(bgr.shape[:2]).astype(bool)
+                    if len(times) > 1:
+                        self._rate = (len(times) - 1) / (times[-1] - times[0])
+                    self._view.update(seen_edges=z["edges"], seen_offset=z["offset"], seen_heading=z["heading"], seen_why=z["why"])
+                    if z["edges"]:
+                        self._seen.append({"t": t, **z})
+                        del self._seen[:-5]     # control_steering.py not running: don't pile them up
+        except Exception as e:
+            self.problem = f"stopped: {e}"
+            self.say(f"autosteer stopped: {e!r}")
+        finally:
+            conn.close()                    # the other process ends when this closes
+            try:
+                child.wait(3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+
+
+def serve(folder, fd):
+    """The other process: pictures in, (measurement, mask) out, until the connection closes."""
+    conn = Connection(fd)
+    try:
+        os.nice(5)                          # the cameras and the recording go first
+        onnx, pose, _ = load(folder)
+        net, geometry = Net(onnx, lambda text: print(text, flush=True)), Geometry(pose)
+    except Exception as e:
+        conn.send(("problem", str(e)))
+        return
+    conn.send(("ready", onnx))
+    while True:
+        try:
+            data = conn.recv_bytes()
+        except EOFError:
+            return
+        t, h, w = struct.unpack_from("<dHH", data)
+        mask = net.mask(np.frombuffer(data, np.uint8, offset=12).reshape(h, w, 3))
+        conn.send((geometry.measure(mask), np.packbits(mask).tobytes()))
 
 
 def main():
@@ -311,4 +379,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1] == "--serve":
+        serve(sys.argv[2], int(sys.argv[3]))
+    else:
+        main()

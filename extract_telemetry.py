@@ -150,7 +150,7 @@ def control_table(run):
             col = np.where(same_tick, v[i, k], np.nan)
             cols[name if v.shape[1] == 1 else f"{name}_{run.motors[k]}"] = col
 
-    for key in ("r1", "stick", "steer", "jack", "speed", "erpm_cmd"):
+    for key in ("r1", "stick", "steer", "jack", "speed", "auto", "erpm_cmd"):
         add(f"/control/{key}", key)
     for entity in sorted(e for e in run.scalars if e.startswith("/vesc/")):
         add(entity, "vesc_" + entity.split("/")[-1])
