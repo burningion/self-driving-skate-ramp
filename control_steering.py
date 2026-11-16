@@ -121,7 +121,7 @@ STICK_INVERT = False           # False = stick DOWN drives forward (old behaviou
 
 # Live speed adjustment: L1 = faster, L2 = slower. Scales every button and stick
 # speed above. Starts at SPEED_START each run.
-SPEED_START = 1.0              # 100% = the ERPMs above
+SPEED_START = 1.2              # 100% = the ERPMs above
 SPEED_STEP = 0.10              # 10% per press
 SPEED_MIN = 0.10
 SPEED_MAX = 1.50
