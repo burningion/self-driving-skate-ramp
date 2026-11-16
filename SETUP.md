@@ -554,3 +554,127 @@ out for a second after. Releasing R1 stops everything, as always. Speed is never
 It goes back to "shadow" by itself when `control_steering.py` stops or `camera.py` restarts, so
 ON has to be pressed again each session. The status box says STEERING while its taps are in use.
 First tries: forwards, nobody on the ramp, started near the middle of a straight sidewalk.
+
+## 15. Watching a run in 3D (training machine)
+
+A run can be replayed inside a 3D model of the place: a Gaussian splat made
+once from a walk-through video, with the ramp's camera moving through it.
+Three scripts, each run with `uv` (which installs what it needs, including the
+GPU build of COLMAP, `pycolmap-cuda12`, into a throwaway environment). The
+splat itself is trained by nerfstudio (`ns-train`), which must be installed.
+
+Maps live in `/scratch/ramp-maps/<name>/`:
+
+```
+/scratch/ramp-maps/home-sidewalk/
+    video/     the camera's files, copied here by hand
+    frames/    made by build_map.py: sharp frames from the video
+    sfm/       made by build_map.py: where the camera was for each frame
+    splat/     made by build_map.py: the splat (splat.ply)
+```
+
+### Filming the map
+
+This is done once per place, on foot, with a camera that is better than the
+ramp's (the notes are for the Sony a7S III on a gimbal; a phone works with the
+same rules). The ramp is not involved. Ten minutes of filming covers a stretch
+of about 50 m.
+
+**Camera settings.** Everything locked, so every frame looks the same:
+
+| Setting | Value | Why |
+|---|---|---|
+| Mode | Movie, manual exposure (M) | nothing may change mid-shot |
+| Format | 4K 60p, XAVC S or XAVC HS | 60p gives more frames to pick sharp ones from. 4:2:0 files decode on the GPU, 4:2:2 on the CPU (slower, same result) |
+| Shutter | 1/500 s or faster | sharp frames matter, smooth motion does not |
+| Aperture | f/8 | everything from 1 m to the horizon in focus |
+| ISO | fixed (not auto), whatever exposes the sidewalk well | |
+| White balance | a fixed preset (Daylight), not auto | |
+| Picture profile | off, or a standard one; not S-Log | no grading step to get wrong |
+| Focus | manual, set at about 3 m, then left alone | |
+| Lens | one wide focal length, 16 to 24 mm; tape a zoom ring | all files share one camera model |
+| SteadyShot | off (not Active) | it warps each frame differently |
+| Lens distortion compensation | off | same reason |
+
+**Gimbal.** Lock the heading and move your feet: turning on the spot gives the
+solver nothing to work with, so step sideways around a corner instead of
+panning. Walk at a slow, steady pace.
+
+**Passes.** Two continuous clips, each out and back without stopping the
+recording:
+
+1. Head height, camera tilted about 30 degrees down: along the stretch, a
+   walked U-turn, and back.
+2. About 20 cm off the ground, camera level and looking along the sidewalk:
+   along the stretch, a walked U-turn, and back. This is what the ramp sees,
+   and the pass its pictures are matched against, so do not skip it. Start it
+   where the first clip ended.
+
+**Turning around.** Views of the same spot from opposite directions do not
+match each other, so the turn is what joins the way out to the way back. Walk
+it as an arc of 2 to 3 m radius, out across the grass and back onto the
+sidewalk, over five to ten seconds, letting the gimbal follow your heading.
+Do not stop and spin on the spot: a camera that turns without moving tells
+the solver nothing about depth, and that is where maps split in two.
+
+Separate clips for each direction can work, but then something else has to
+join them: add a slow sideways arc of a few metres across the grass, facing
+the sidewalk, at each end and once in the middle.
+
+Go a few metres past both ends of where the ramp will drive. A frame is kept
+every 10 to 20 cm of walking, so there is no need to go slowly beyond a
+normal stroll.
+
+**Conditions.** Overcast, or the sun high, and close to the time of day of the
+runs so the shadows fall the same way. No people in shot (including your own
+shadow and feet where you can help it) and no moving cars. Parked cars that
+later move are fine: the houses, trees and kerbs are what the map holds on to.
+
+**Copying the files.** On the card they are in `PRIVATE/M4ROOT/CLIP/` as
+`C0001.MP4` and so on. Copy the ones for this place, untouched, into the
+map's `video/` folder:
+
+```
+mkdir -p /scratch/ramp-maps/home-sidewalk/video
+cp /media/$USER/*/PRIVATE/M4ROOT/CLIP/C00*.MP4 /scratch/ramp-maps/home-sidewalk/video/
+```
+
+4K 60p is roughly 1 to 1.5 GB a minute, which is why maps live on `/scratch`.
+
+**Checking the capture.** `./build_map.py home-sidewalk --steps frames,sfm`
+stops before the (long) splat step and says how many frames it placed. All or
+nearly all of them, in one piece, means the capture is good and the same
+command without `--steps` finishes the job. If it warns that the map came out
+in pieces, some passes did not connect: film one more pass that visibly
+overlaps both (a slow arc between them), add the file to `video/`, and run it
+again with `--force`. When the camera's focal length it prints is far from the
+lens you used, pass `--focal-mm`.
+
+### Building, localizing, viewing
+
+```
+./build_map.py home-sidewalk --focal-mm 20          # once per place; the lens's focal length
+./localize_run.py 2026-11-14_15-02-36 --map home-sidewalk
+./view_run_3d.py 2026-11-14_15-02-36                # prints the address to open
+```
+
+1. **`build_map.py NAME`** runs three steps and skips any already done
+   (`--force` redoes them, `--steps frames,sfm` picks some). `--focal-mm 20`
+   gives the pose solver the lens's focal length as a starting guess. It
+   reports how many frames it could place; if the map comes out in pieces, the
+   passes did not connect and a linking pass is needed.
+2. **`localize_run.py RUN --map NAME`** takes a run exported by
+   `export_run.py` and writes `trajectory.parquet` (and a summary,
+   `trajectory.json`) into the run's folder: the front camera's position and
+   orientation for every frame, in the map's `sfm/` coordinates. The `source`
+   column says where each came from: `fix` (the picture matched the map),
+   `interp` (between two fixes, placed by the wheels), `odom` (within 5 m of
+   driving before the first or after the last fix) or `none` (further than
+   that from any fix, so outside the map: no position).
+3. **`view_run_3d.py RUN`** serves a page with the splat, the path (cyan where
+   matched, orange where dead-reckoned) and the front camera's picture at the
+   current moment, with a time slider, play, a follow view, and a model of the
+   ramp's plywood board under the camera ("board" hides it).
+
+The map has no scale of its own; `localize_run.py` works it out per run from
+the wheels (`units_per_m` in `trajectory.json`).
