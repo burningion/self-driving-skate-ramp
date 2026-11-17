@@ -29,6 +29,8 @@ again.
   `camera.py` picks the first USB camera that is not the RealSense.
 - Two VESCs. The back one is on USB, the front one is reached through it over CAN.
 - Teensy 3.2 on USB. Relay pins: A9 steer right, A8 steer left, A6 jack up, A7 jack down.
+  Jack limit switches (normally closed, in series): GND - top switch - pin 3 -
+  bottom switch - pin 1.
 - PS4 controller (DualShock 4), over USB or Bluetooth. Pairing notes are in
   [`ps4-controller.md`](ps4-controller.md).
 
@@ -167,6 +169,10 @@ At startup it finds the hardware and tests the Teensy's watchdog. Then:
 
 One continuous steering push is cut off after 3 seconds, because the
 actuator has no limit switches. Release and press again to keep going.
+
+The jack stops by itself at the top and bottom: the Teensy reads its two limit
+switches and refuses to drive further that way. If the switch cable comes
+unplugged the jack will only go down.
 
 `--no-checks` skips the Teensy self-test and the telemetry-based faults;
 `--dry-run` runs with no hardware at all.

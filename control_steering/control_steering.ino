@@ -8,18 +8,26 @@
 //   board -> host (8 bytes):  0x5A, version, steer, jack, flags, seq, wd_trips, crc8
 //
 // steer: +1 right, -1 left, 0 off.   jack: +1 up, -1 down, 0 off.
+// flags: 1 timed out, 2 steer capped, 4 jack capped, 8 jack at top, 16 jack at bottom.
 // crc8 (poly 0x07) covers everything between the start byte and the crc.
 // The same constants live in control_steering.py -- change them together.
 
-const uint8_t FW_VERSION = 2;
+const uint8_t FW_VERSION = 3;
 
 const uint8_t PIN_RIGHT = A9, PIN_LEFT = A8;
 const uint8_t PIN_UP = A6, PIN_DOWN = A7;
 const uint8_t PIN_LED = 13;
+// Jack limit switches. Both are normally closed and wired in series from GND:
+//   GND -- top switch -- pin 3 -- bottom switch -- pin 1
+// With pull-ups, pin 3 goes HIGH at the top, and pin 1 goes HIGH at the bottom
+// (or at the top, since the top switch also cuts its path to GND). An unplugged
+// cable therefore reads as "at top": up is blocked, down still works.
+const uint8_t PIN_LIMIT_TOP = 3, PIN_LIMIT_BOTTOM = 1;
 
 const uint32_t HEARTBEAT_TIMEOUT_MS = 250;   // no valid packet for this long -> all outputs off
 const uint32_t REVERSE_DEADTIME_MS = 100;    // both relays off this long before reversing
 const uint32_t STATUS_PERIOD_MS = 20;
+const uint32_t LIMIT_DEBOUNCE_MS = 20;       // a limit reading must hold this long to count
 // Longest one continuous push in a single direction. The steering actuator has
 // no limit switches, so this bounds a stuck command. Release and press again to
 // keep going.
@@ -29,6 +37,7 @@ const uint32_t JACK_MAX_ON_MS = 60000;
 const uint8_t CMD_START = 0xA5, CMD_LEN = 6;
 const uint8_t STATUS_START = 0x5A, STATUS_LEN = 8;
 const uint8_t FLAG_TIMED_OUT = 1, FLAG_STEER_CAPPED = 2, FLAG_JACK_CAPPED = 4;
+const uint8_t FLAG_JACK_AT_TOP = 8, FLAG_JACK_AT_BOTTOM = 16;
 
 struct Axis {
   uint8_t pinPos, pinNeg;
@@ -50,6 +59,8 @@ uint8_t wdTrips = 0;
 bool timedOut = true;            // nothing moves until the first valid packet
 uint32_t lastCmdMs = 0;
 uint32_t lastStatusMs = 0;
+uint8_t limits = 0, limitsRaw = 0;   // FLAG_JACK_AT_TOP / FLAG_JACK_AT_BOTTOM
+uint32_t limitsRawSince = 0;
 
 uint8_t crc8(const uint8_t *data, uint8_t len) {
   uint8_t crc = 0;
@@ -73,7 +84,23 @@ void axisOff(Axis &a, uint32_t now) {
   }
 }
 
-void axisUpdate(Axis &a, uint32_t now) {
+uint8_t readLimits() {
+  if (digitalRead(PIN_LIMIT_TOP)) return FLAG_JACK_AT_TOP;
+  return digitalRead(PIN_LIMIT_BOTTOM) ? FLAG_JACK_AT_BOTTOM : 0;
+}
+
+void limitsUpdate(uint32_t now) {
+  uint8_t raw = readLimits();
+  if (raw != limitsRaw) {
+    limitsRaw = raw;
+    limitsRawSince = now;
+  } else if (now - limitsRawSince >= LIMIT_DEBOUNCE_MS) {
+    limits = raw;
+  }
+}
+
+// blockPos / blockNeg: a limit switch says the axis can't go further that way.
+void axisUpdate(Axis &a, uint32_t now, bool blockPos, bool blockNeg) {
   int8_t want = a.want;
   if (a.capped) {
     if (want == 0) a.capped = false;     // released: allow the next push
@@ -82,6 +109,7 @@ void axisUpdate(Axis &a, uint32_t now) {
     a.capped = true;
     want = 0;
   }
+  if ((want > 0 && blockPos) || (want < 0 && blockNeg)) want = 0;
   if (want == a.out) return;
   axisOff(a, now);
   if (want == 0) return;
@@ -120,7 +148,7 @@ void sendStatus() {
   tx[1] = FW_VERSION;
   tx[2] = (uint8_t)steer.out;
   tx[3] = (uint8_t)jack.out;
-  tx[4] = (timedOut ? FLAG_TIMED_OUT : 0) | (steer.capped ? FLAG_STEER_CAPPED : 0) | (jack.capped ? FLAG_JACK_CAPPED : 0);
+  tx[4] = (timedOut ? FLAG_TIMED_OUT : 0) | (steer.capped ? FLAG_STEER_CAPPED : 0) | (jack.capped ? FLAG_JACK_CAPPED : 0) | limits;
   tx[5] = lastSeq;
   tx[6] = wdTrips;
   tx[7] = crc8(tx + 1, STATUS_LEN - 2);
@@ -133,6 +161,10 @@ void setup() {
     digitalWrite(outputs[i], LOW);
     pinMode(outputs[i], OUTPUT);
   }
+  pinMode(PIN_LIMIT_TOP, INPUT_PULLUP);
+  pinMode(PIN_LIMIT_BOTTOM, INPUT_PULLUP);
+  delay(2);
+  limits = limitsRaw = readLimits();
   pinMode(PIN_LED, OUTPUT);
   Serial.begin(115200);
 }
@@ -149,8 +181,9 @@ void loop() {
     steer.want = 0;
     jack.want = 0;
   }
-  axisUpdate(steer, now);
-  axisUpdate(jack, now);
+  limitsUpdate(now);
+  axisUpdate(steer, now, false, false);
+  axisUpdate(jack, now, limits & FLAG_JACK_AT_TOP, limits & FLAG_JACK_AT_BOTTOM);
 
   if (now - lastStatusMs >= STATUS_PERIOD_MS) {
     lastStatusMs = now;

@@ -137,7 +137,7 @@ RAMP_ERPM_PER_S = 8000         # accel/decel limit; 0..3100 in ~0.4 s. None = no
 STOP_MODE = "rpm"
 BRAKE_CURRENT_A = 10.0
 
-TEENSY_FW_VERSION = 2          # must match FW_VERSION in control_steering.ino
+TEENSY_FW_VERSION = 3          # must match FW_VERSION in control_steering.ino
 TEENSY_HEARTBEAT_TIMEOUT_S = 0.25   # must match HEARTBEAT_TIMEOUT_MS in the firmware
 
 TELEMETRY_STALE_S = 0.5        # VESC / Teensy status older than this is a fault
@@ -468,7 +468,8 @@ def parse_teensy_status(buf):
             version, steer, jack, flags, seq, trips = struct.unpack("<BbbBBB", buf[1:n - 1])
             latest = {"version": version, "steer": steer, "jack": jack, "seq": seq,
                       "timed_out": bool(flags & 1), "steer_capped": bool(flags & 2),
-                      "jack_capped": bool(flags & 4), "wd_trips": trips}
+                      "jack_capped": bool(flags & 4), "jack_at_top": bool(flags & 8),
+                      "jack_at_bottom": bool(flags & 16), "wd_trips": trips}
             del buf[:n]
         else:
             del buf[0]
@@ -528,6 +529,9 @@ class Teensy:
                 buf += data
                 st = parse_teensy_status(buf)
                 if st:
+                    for key in ("jack_at_top", "jack_at_bottom"):
+                        if st[key] != (self.status or {}).get(key, False):
+                            log.info("Teensy %s: %s", key, st[key])
                     self.status, self._status_at = st, time.monotonic()
 
     def send(self, steer, jack):
