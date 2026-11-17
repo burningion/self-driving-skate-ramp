@@ -125,7 +125,7 @@ SPEED_START = 2.0              # 200% = the ERPMs above
 SPEED_STEP = 0.10              # 10% per press
 SPEED_MIN = 0.10
 SPEED_MAX = 5
-MAX_ERPM = 9000                # hard ceiling on any command, whatever the speed setting
+MAX_ERPM = 7500                # hard ceiling on any command, whatever the speed setting
 
 CONTROL_HZ = 50                # VESC App timeout should be ~10x this period (250-500 ms)
 RAMP_ERPM_PER_S = 8000         # accel/decel limit; 0..3100 in ~0.4 s. None = no ramp.
