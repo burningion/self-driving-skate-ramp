@@ -13,14 +13,15 @@ Python 3.12), run headless over Tailscale.
 | `control_steering.py` | PS4 controller -> VESCs + Teensy. The only thing that moves the ramp | by hand, each session |
 | Teensy firmware | Drives the steering and jack relays, with its own watchdog | flashed once |
 
-Recording is tied to the control script: a run file is opened when
-`control_steering.py` starts and closed a few seconds after it stops.
-The phone page shows the name of the file being written (bottom left, under
-`REC`) and, once it is closed, `saved <file>`. **stop recording** (right
-side) closes the file while `control_steering.py` keeps running; the button
-then becomes **start recording**, which opens a new file. Stopping by hand
-only lasts for that session: the next start of `control_steering.py` records
-again.
+Recording is started by hand: with `control_steering.py` running, tap
+**start recording** on the phone page (right side) to open a run file. The
+page shows the name of the file being written (bottom left, under `REC`)
+and, once it is closed, `saved <file>`. **stop recording** closes the file;
+so does stopping `control_steering.py`, a few seconds after. Nothing is
+recorded until the button is tapped again, and the button is greyed out
+while `control_steering.py` is not running. (`REC_AUTOSTART = True` at the
+top of `camera.py` records every session from the moment
+`control_steering.py` starts, as it used to.)
 
 ## Hardware assumed
 
@@ -164,6 +165,8 @@ At startup it finds the hardware and tests the Teensy's watchdog. Then:
 - **READY**: hold R1, with nothing else pressed, to arm.
 - **ARMED**: stick or face buttons drive, D-pad left/right steers, D-pad
   up/down moves the jack, L1/L2 change the speed scale. Release R1 to stop.
+  X is slow forwards and circle is fast forwards (about 8 mph, reached over
+  3 s, and not changed by L1/L2); square and triangle are slow backwards.
 - **FAULT**: the log says why (controller lost, VESC link or telemetry lost,
   VESC fault, Teensy silent). Fix it, release R1, and arm again.
 
@@ -207,12 +210,12 @@ own auto-exposure. When a recording starts, all three are frozen where they
 are, and released when it ends. The log and the recording (`camera/exposure`)
 say what each was locked at.
 
-So start `control_steering.py` with the ramp in the light it will be driven
+So start the recording with the ramp in the light it will be driven
 in: if it starts in the garage and drives out into the sun, the run will be
 overexposed. If the light does change mid-run, tap **reset exposure** on the
 phone page (top right; greyed out when nothing is locked): exposure adjusts to the current light for
 `AE_RESET_S` (3 seconds), then locks again, and the new values are logged.
-Restarting `control_steering.py` does the same thing, as a new recording.
+Stopping and starting the recording does the same thing, as a new file.
 `LOCK_EXPOSURE = False` keeps exposure adjusting during runs.
 
 If the RealSense stops sending pictures for 10 seconds, `camera.py` resets it

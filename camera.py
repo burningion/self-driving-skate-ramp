@@ -3,11 +3,12 @@
 RealSense D455 (front) + USB webcam (rear) -> H.264 (WebRTC via MediaMTX) + MJPEG fallback,
 with IMU overlay, over Tailscale. The live view is front and rear side by side, labelled.
 
-Also records runs. While control_steering.py is running, everything is written
-at full rate to one Rerun file per session in RUN_DIR: front colour and left infrared (JPEG),
-front depth (16-bit PNG, lossless), the rear camera (JPEG), raw IMU, and the control loop's state. The recording
-starts when control_steering.py starts and ends a few seconds after it stops. The web page
-shows the file name and has a button to stop it early (and start a new file).
+Also records runs. While control_steering.py is running and "start recording" has been pressed
+on the web page, everything is written at full rate to one Rerun file in RUN_DIR: front colour and
+left infrared (JPEG), front depth (16-bit PNG, lossless), the rear camera (JPEG), raw IMU, and the
+control loop's state. The recording ends when "stop recording" is pressed, or a few seconds after
+control_steering.py stops. The web page shows the file name. (REC_AUTOSTART = True records every
+session of control_steering.py from its start, without the button.)
 
 Run with the project venv (.venv/bin/python camera.py): it has rerun-sdk, and
 falls through to the system pyrealsense2.
@@ -46,6 +47,7 @@ JPEG_Q     = 60                # MJPEG fallback only
 PORT       = 8080
 STATE_ADDR = ("127.0.0.1", 47800)   # control_steering.py sends its state here (UDP JSON)
 RUN_DIR    = os.path.expanduser("~/ramp-runs")
+REC_AUTOSTART = False          # True = start recording as soon as control_steering.py starts; False = only from the web page's button
 REC_IDLE_S = 5.0               # close the recording this long after control_steering.py goes quiet
 REC_MIN_FREE_GB = 20           # don't start a recording with less disk than this (a run is roughly 35 GB per hour)
 REC_JPEG_Q = 90
@@ -155,7 +157,7 @@ class Recorder(threading.Thread):
         self.rec = None
         self.file = None                 # file name of the open recording, for the web page
         self.last_file = None            # the recording closed most recently
-        self.paused = False              # stopped from the web page; cleared when control_steering.py goes quiet
+        self.paused = not REC_AUTOSTART  # not recording until the web page says so; back to this when control_steering.py goes quiet
         self._last_msg = {}
         self.calibration = None          # set by capture() once the camera is open
         self._frames_queued = 0
@@ -214,7 +216,7 @@ class Recorder(threading.Thread):
                 self._last_control, self._last_msg = now, data
             active = now - self._last_control < REC_IDLE_S
             if not active:
-                self.paused = False          # the next run of control_steering.py records again
+                self.paused = not REC_AUTOSTART      # the next run of control_steering.py starts as the setting says
             want = active and not self.paused
             if want and self.rec is None:
                 self._open(self._last_msg)
@@ -876,10 +878,11 @@ eb.onclick=async()=>{
 const rb=document.getElementById('rec'); let recAt=0, recOn=false;
 function showRec(d){
   recOn=!!d.recording;
-  rb.disabled=!(d.recording||d.rec_paused);
+  const running=d.state!=='OFFLINE';
+  rb.disabled=!(d.recording||(d.rec_paused&&running));
   rb.className=d.recording?'stop':'';
   rb.firstChild.textContent=d.recording||!d.rec_paused?'stop recording':'start recording';
-  rb.lastChild.textContent=d.recording?'':d.rec_paused?'stopped by hand':'starts with control_steering.py';
+  rb.lastChild.textContent=d.recording?'':!d.rec_paused?'starts with control_steering.py':running?'not recording':'needs control_steering.py running';
 }
 rb.onclick=async()=>{
   rb.disabled=true; rb.lastChild.textContent=recOn?'stopping...':'starting...'; recAt=Date.now();

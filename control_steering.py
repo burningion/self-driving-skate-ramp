@@ -31,7 +31,9 @@ How the control works
 * A control loop runs at CONTROL_HZ and every tick computes the target speed,
   ramps toward it, and sends it to both VESCs (a steady stream, so the VESC's
   own timeout acts as a watchdog if this script dies).
-* L1 / L2 raise / lower the speed of everything in 10% steps.
+* X drives forwards slowly and circle fast (FAST_ERPM, about 8 mph, reached over
+  FAST_RAMP_S); square and triangle drive backwards slowly.
+* L1 / L2 raise / lower the speed of everything but the fast button in 10% steps.
 * R1 is a dead-man switch. Releasing it stops everything immediately.
 
 Arming and faults
@@ -104,12 +106,18 @@ BACK_DRIVE_RPM = 2900
 FRONT_SPIN_RPM = 3300
 BACK_SPIN_RPM = 3300
 
+# The fast button: a fixed speed, not scaled by L1/L2 and not held down by MAX_ERPM,
+# reached gently. 12000 ERPM is about 8 mph (3.7 m/s at the fitted 3.05e-4 m/s per ERPM).
+FAST_ERPM = 12000
+FAST_RAMP_S = 3.0              # 0 to FAST_ERPM takes this long. Slowing down uses RAMP_ERPM_PER_S, as everything does.
+FAST_BUTTONS = ("circle",)
+
 # What each face button does. If several are held, the most recently pressed
-# wins. This matches the old script (both motors got FRONT_DRIVE_RPM); swap in
-# BACK_DRIVE_RPM / *_SPIN_RPM here if you want them.
+# wins. X is slow forwards and circle is fast forwards; square and triangle are
+# slow backwards. Swap in BACK_DRIVE_RPM / *_SPIN_RPM here if you want them.
 BUTTON_ACTIONS = {
     "x":        {"front": FRONT_DRIVE_RPM,  "back": FRONT_DRIVE_RPM},
-    "circle":   {"front": FRONT_DRIVE_RPM,  "back": FRONT_DRIVE_RPM},
+    "circle":   {"front": FAST_ERPM,        "back": FAST_ERPM},
     "square":   {"front": -FRONT_DRIVE_RPM, "back": -FRONT_DRIVE_RPM},
     "triangle": {"front": -FRONT_DRIVE_RPM, "back": -FRONT_DRIVE_RPM},
 }
@@ -119,13 +127,13 @@ STICK_MAX_RPM = {"front": FRONT_DRIVE_RPM, "back": FRONT_DRIVE_RPM}
 STICK_DEADZONE = 0.12          # fraction of full travel
 STICK_INVERT = False           # False = stick DOWN drives forward (old behaviour)
 
-# Live speed adjustment: L1 = faster, L2 = slower. Scales every button and stick
-# speed above. Starts at SPEED_START each run.
+# Live speed adjustment: L1 = faster, L2 = slower. Scales the stick and every
+# button above except the fast one. Starts at SPEED_START each run.
 SPEED_START = 2.0              # 200% = the ERPMs above
 SPEED_STEP = 0.10              # 10% per press
 SPEED_MIN = 0.10
 SPEED_MAX = 5
-MAX_ERPM = 7500                # hard ceiling on any command, whatever the speed setting
+MAX_ERPM = 9000                # hard ceiling on any scaled command, whatever the speed setting (the fast button has its own)
 
 CONTROL_HZ = 50                # VESC App timeout should be ~10x this period (250-500 ms)
 RAMP_ERPM_PER_S = 8000         # accel/decel limit; 0..3100 in ~0.4 s. None = no ramp.
@@ -751,7 +759,11 @@ def is_neutral(s):
 
 
 def compute_targets(s):
-    """What the inputs ask for while armed: ({motor: erpm}, steer, jack)."""
+    """What the inputs ask for while armed: ({motor: erpm}, steer, jack, the fast button is what is asking)."""
+    if s.held and s.held[-1] in FAST_BUTTONS:
+        rpm = {m: 0 for m in MOTORS}
+        rpm.update(BUTTON_ACTIONS[s.held[-1]])
+        return rpm, s.horizontal, s.vertical, True
     if s.held:
         rpm = {m: 0 for m in MOTORS}
         rpm.update(BUTTON_ACTIONS[s.held[-1]])
@@ -760,7 +772,15 @@ def compute_targets(s):
     else:
         rpm = {m: 0 for m in MOTORS}
     rpm = {m: max(-MAX_ERPM, min(MAX_ERPM, v * s.speed)) for m, v in rpm.items()}
-    return rpm, s.horizontal, s.vertical      # steer: +1 right; jack: +1 up
+    return rpm, s.horizontal, s.vertical, False     # steer: +1 right; jack: +1 up
+
+
+def ramp_step(commanded, target, fast, max_delta):
+    """The most a command may change in one tick: less while the fast button is speeding the motor up."""
+    if fast and abs(target) > abs(commanded) and target * commanded >= 0:
+        gentle = abs(FAST_ERPM) / FAST_RAMP_S / CONTROL_HZ
+        return gentle if max_delta is None else min(gentle, max_delta)
+    return max_delta
 
 
 def step_toward(current, target, max_delta):
@@ -902,10 +922,10 @@ class ControlLoop(threading.Thread):
         elif self._ready and not self._armed and is_neutral(s):
             self._armed = True
 
-        auto = None
+        auto, fast = None, False
         if self._armed:
             state = "ARMED"
-            targets, steer, jack = compute_targets(s)
+            targets, steer, jack, fast = compute_targets(s)
             now = time.monotonic()
             if steer:
                 self._manual_at = now
@@ -933,7 +953,8 @@ class ControlLoop(threading.Thread):
 
         for m, can_id in self.can_ids.items():
             if self._armed:
-                self.commanded[m] = step_toward(self.commanded[m], targets[m], max_delta)
+                self.commanded[m] = step_toward(self.commanded[m], targets[m],
+                                                ramp_step(self.commanded[m], targets[m], fast, max_delta))
             else:
                 self.commanded[m] = 0.0                    # stop now, no ramp
             self._send_motor(can_id, self.commanded[m])
