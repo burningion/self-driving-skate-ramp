@@ -36,12 +36,12 @@ other_box: ___, ___, ___, ___, ___    # copy this line for anything else
 
 ## Jack
 
-jack_center_x: ___
-jack_center_y: ___
-jack_base_length: ___              # footprint along x
-jack_base_width: ___               # footprint along y
-jack_saddle_z_bottom: ___          # saddle top above ground at the BOTTOM limit switch
-jack_saddle_z_top: ___             # saddle top above ground at the TOP limit switch
+jack_center_x: 0"
+jack_center_y: -18.5"
+jack_base_length: 6"              # footprint along x
+jack_base_width: 32"               # footprint along y
+jack_saddle_z_bottom: 16.5"          # saddle top above ground at the BOTTOM limit switch
+jack_saddle_z_top: 22.5"             # saddle top above ground at the TOP limit switch
 jack_saddle_diameter: ___
 jack_body_diameter: ___            # widest part of the jack body
 jack_rated_load_kg: ___
@@ -84,10 +84,10 @@ ramp_material: ___                 # e.g. 3/4" plywood on 2x4 frame
 
 ## Photos (drop them in the repo and list the filenames)
 
-photo_side: ___                    # square-on from the side, tape measure in frame
-photo_front: ___
-photo_top: ___
-photo_jack_closeup: ___
+photo_side: photos/side.jpg            # square-on from the side, tape measure in frame
+photo_front: photos/front.jpg
+photo_top: photos/top.jpg
+photo_jack_closeup: photos/jack.jpg
 
 
 ## Notes
