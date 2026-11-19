@@ -1,0 +1,97 @@
+# Ramp design measurements
+#
+# Fill in each ___ . Leave it as ___ if you don't know it yet.
+#
+# Reference frame (use it for every position below):
+#   origin = on the ground, directly under the centre of the FRONT axle
+#   x = forward (behind the front axle is negative)
+#   y = left of the centreline (right is negative)
+#   z = up from the ground
+#
+# Take every measurement with the jack at its BOTTOM limit switch unless the
+# line says otherwise, on flat ground.
+
+units: mm          # change to "in" if you measure in inches
+angles: degrees
+
+
+## Chassis
+
+deck_length: 36"
+deck_width:12"
+deck_top_z: 6"                    # top surface of the deck above ground
+deck_front_x: 1"                  # nose of the deck (positive, ahead of the front axle)
+rear_axle_x: 1"                   # negative; this is the wheelbase
+wheel_outer_width: 10"             # outside of left wheel to outside of right wheel
+wheel_diameter: 3.5"
+
+# Anything that sticks up above the deck. One line each, as a box:
+# x_min, x_max, y_min, y_max, z_top
+steering_actuator_box: ___, ___, ___, ___, ___
+steel_plates_box: ___, ___, ___, ___, ___
+battery_box: ___, ___, ___, ___, ___
+jetson_box: ___, ___, ___, ___, ___
+other_box: ___, ___, ___, ___, ___    # copy this line for anything else
+
+
+## Jack
+
+jack_center_x: ___
+jack_center_y: ___
+jack_base_length: ___              # footprint along x
+jack_base_width: ___               # footprint along y
+jack_saddle_z_bottom: ___          # saddle top above ground at the BOTTOM limit switch
+jack_saddle_z_top: ___             # saddle top above ground at the TOP limit switch
+jack_saddle_diameter: ___
+jack_body_diameter: ___            # widest part of the jack body
+jack_rated_load_kg: ___
+
+
+## Front camera (RealSense D455)
+
+front_cam_x: ___                   # centre of the front glass
+front_cam_y: ___
+front_cam_z: ___                   # or leave blank: camera_pose.json has it
+front_cam_tilt: ___                # up is positive; or leave blank: camera_pose.json has it
+front_cam_mount_box: ___, ___, ___, ___, ___    # camera body plus mount: x_min, x_max, y_min, y_max, z_top
+front_cam_can_move: ___            # yes / no - could it be remounted if the ramp needs it?
+
+
+## Rear camera (USB webcam)
+
+rear_cam_model: ___
+rear_cam_x: ___                    # lens position (negative)
+rear_cam_y: ___
+rear_cam_z: ___
+rear_cam_tilt: ___                 # up is positive
+rear_cam_mount_box: ___, ___, ___, ___, ___
+rear_cam_can_move: ___             # yes / no
+
+
+## Ramp targets
+
+ramp_width: ___
+ramp_lip_height: ___               # top of the ramp above ground when lowered for skating
+ramp_length: ___                   # along the ground, in the direction you skate
+ramp_shape: ___                    # flat wedge / curved transition / other
+ramp_ride_direction: ___           # along x (same way the board drives) or along y (across it)
+ramp_two_sided: ___                # yes / no - ramp up both sides, or one side only?
+min_ground_clearance_raised: ___   # lowest part of the ramp above ground when driving
+max_total_height_raised: ___       # tallest you'd accept the whole thing when driving
+ramp_weight_budget_kg: ___
+ramp_material: ___                 # e.g. 3/4" plywood on 2x4 frame
+
+
+## Photos (drop them in the repo and list the filenames)
+
+photo_side: ___                    # square-on from the side, tape measure in frame
+photo_front: ___
+photo_top: ___
+photo_jack_closeup: ___
+
+
+## Notes
+
+# Anything that doesn't fit above: things that must stay reachable (power switch,
+# charge port), where cables run, what the ramp has rested on before, etc.
+___
